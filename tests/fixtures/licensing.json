@@ -1,0 +1,7 @@
+{
+  "licenseMode": "co-term",
+  "licenses": [
+    {"key": "Z111-TEST-ACT1", "expired": false, "invalidated": false, "startedAt": "2024-01-01T00:00:00Z", "duration": 1095, "counts": [{"count": 10, "model": "MR Enterprise"}], "editions": [{"edition": "Enterprise", "productType": "wireless"}]},
+    {"key": "Z111-TEST-EXP1", "expired": true, "invalidated": false, "startedAt": "2020-01-01T00:00:00Z", "duration": 365, "counts": [{"count": 5, "model": "MS Enterprise"}], "editions": [{"edition": "Enterprise", "productType": "switch"}]}
+  ]
+}

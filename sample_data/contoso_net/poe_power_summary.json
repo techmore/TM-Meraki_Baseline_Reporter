@@ -1,0 +1,36 @@
+{
+  "switch_poe_totals": [
+    {
+      "serial": "Q2AA-BBBB-CCCC",
+      "powerUsageInWh": 3450.2,
+      "avgWatts": 143.8
+    },
+    {
+      "serial": "Q2BB-BBBB-CCCC",
+      "powerUsageInWh": 2890.5,
+      "avgWatts": 120.4
+    },
+    {
+      "serial": "Q2CC-BBBB-CCCC",
+      "powerUsageInWh": 1875.3,
+      "avgWatts": 78.1
+    }
+  ],
+  "port_poe_totals": [
+    {
+      "serial": "Q2AA-BBBB-CCCC",
+      "portId": "1",
+      "powerUsageInWh": 245.6
+    },
+    {
+      "serial": "Q2AA-BBBB-CCCC",
+      "portId": "2",
+      "powerUsageInWh": 238.9
+    },
+    {
+      "serial": "Q2BB-BBBB-CCCC",
+      "portId": "24",
+      "powerUsageInWh": 210.5
+    }
+  ]
+}

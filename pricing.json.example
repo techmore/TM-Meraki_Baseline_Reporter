@@ -1,0 +1,11 @@
+{
+  "currency": "USD",
+  "baseline_vendor": "Ubiquiti",
+  "models": {
+    "MR44": {"unit_cost": 0, "replacement_cycle_years": 8},
+    "MR76": {"unit_cost": 0, "replacement_cycle_years": 8},
+    "MS120-24P": {"unit_cost": 0, "replacement_cycle_years": 8},
+    "MS120-48FP": {"unit_cost": 0, "replacement_cycle_years": 8},
+    "MX100": {"unit_cost": 0, "replacement_cycle_years": 8}
+  }
+}

@@ -1,0 +1,8 @@
+[
+  {"serial": "Q2QN-TEST-0001", "name": "MX-Edge", "model": "MX68", "productType": "appliance", "status": "online", "mac": "aa:bb:cc:00:00:01", "network": {"id": "N_test_001", "name": "Main"}},
+  {"serial": "Q2SW-TEST-0001", "name": "Core-SW-1", "model": "MS225-24P", "productType": "switch", "status": "online", "mac": "aa:bb:cc:00:00:02", "network": {"id": "N_test_001", "name": "Main"}},
+  {"serial": "Q2SW-TEST-0002", "name": "Access-SW-1", "model": "MS120-8LP", "productType": "switch", "status": "online", "mac": "aa:bb:cc:00:00:03", "network": {"id": "N_test_001", "name": "Main"}},
+  {"serial": "Q2SW-TEST-0003", "name": "Access-SW-2", "model": "MS225-24P", "productType": "switch", "status": "alerting", "mac": "aa:bb:cc:00:00:04", "network": {"id": "N_test_001", "name": "Main"}},
+  {"serial": "Q2AP-TEST-0001", "name": "AP-1F-01", "model": "MR46", "productType": "wireless", "status": "online", "mac": "aa:bb:cc:00:00:05", "network": {"id": "N_test_001", "name": "Main"}},
+  {"serial": "Q2AP-TEST-0002", "name": "AP-1F-02", "model": "MR36", "productType": "wireless", "status": "online", "mac": "aa:bb:cc:00:00:06", "network": {"id": "N_test_001", "name": "Main"}}
+]

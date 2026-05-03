@@ -1,0 +1,9 @@
+{
+  "checks": [
+    {"networkName": "Main", "networkId": "N_test_001", "check": "Advanced Malware Protection", "status": "Pass", "observed": "enabled", "description": "AMP is enabled.", "remediation": "Keep enabled."},
+    {"networkName": "Main", "networkId": "N_test_001", "check": "Intrusion Prevention", "status": "Fail", "observed": "detection", "description": "IDS/IPS is in detection-only mode.", "remediation": "Switch to prevention mode."},
+    {"networkName": "Main", "networkId": "N_test_001", "check": "Spoof Protection", "status": "Pass", "observed": "block", "description": "IP spoofing protection enabled.", "remediation": "Keep enabled."},
+    {"networkName": "Main", "networkId": "N_test_001", "check": "Internet-Exposed Port Forwarding", "status": "Pass", "observed": "", "description": "No unrestricted port forwarding.", "remediation": "Review periodically."}
+  ],
+  "summary": {"pass": 3, "fail": 1, "warning": 0, "info": 0}
+}

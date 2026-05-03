@@ -1,0 +1,68 @@
+[
+  {
+    "mac": "00:11:22:33:44:55",
+    "name": "Main Office MX250",
+    "network": {
+      "id": "N_1234567890"
+    },
+    "productType": "appliance",
+    "serial": "Q2AA-AAAA-AAAA",
+    "status": "online",
+    "tags": ["core-firewall"]
+  },
+  {
+    "mac": "00:11:22:33:44:66",
+    "name": "Branch Office MX250",
+    "network": {
+      "id": "N_1234567891"
+    },
+    "productType": "appliance",
+    "serial": "Q2AA-BBBB-BBBB",
+    "status": "online",
+    "tags": ["branch-firewall"]
+  },
+  {
+    "mac": "00:11:22:33:44:77",
+    "name": "Main Switch 1",
+    "network": {
+      "id": "N_1234567890"
+    },
+    "productType": "switch",
+    "serial": "Q2AA-CCCC-CCCC",
+    "status": "online",
+    "tags": ["core-switch"]
+  },
+  {
+    "mac": "00:11:22:33:44:88",
+    "name": "Main Switch 2",
+    "network": {
+      "id": "N_1234567890"
+    },
+    "productType": "switch",
+    "serial": "Q2AA-DDDD-DDDD",
+    "status": "online",
+    "tags": ["core-switch"]
+  },
+  {
+    "mac": "00:11:22:33:44:99",
+    "name": "AP-Main-Office-01",
+    "network": {
+      "id": "N_1234567890"
+    },
+    "productType": "wireless",
+    "serial": "Q2AA-EEEE-EEEE",
+    "status": "online",
+    "tags": ["main-office-wifi"]
+  },
+  {
+    "mac": "00:11:22:33:44:00",
+    "name": "AP-Main-Office-02",
+    "network": {
+      "id": "N_1234567890"
+    },
+    "productType": "wireless",
+    "serial": "Q2AA-FFFF-FFFF",
+    "status": "online",
+    "tags": ["main-office-wifi"]
+  }
+]

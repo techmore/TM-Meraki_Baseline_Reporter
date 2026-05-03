@@ -1,0 +1,17 @@
+# Core Meraki SDK
+meraki>=1.45.0
+
+# PDF generation (pure Python, no external binary needed)
+weasyprint>=60.0
+
+# Report formatting
+prettytable>=3.9.0
+
+# ── Optional / external ───────────────────────────────────────────────────────
+# PDF fallback (install separately if WeasyPrint is unavailable):
+#   macOS:  brew install wkhtmltopdf
+#   Ubuntu: apt-get install wkhtmltopdf
+#   Arch:   pacman -S wkhtmltopdf
+#
+# Ollama (local LLM for AI-enhanced recommendations):
+#   https://ollama.ai  →  ollama pull gemma4:e2b
