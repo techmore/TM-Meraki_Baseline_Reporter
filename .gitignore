@@ -79,3 +79,9 @@ meraki_backup_*/
 meraki_backup_sample_*/
 */report.pdf
 */report.html
+*_Complete_Report_*.pdf
+*_Complete_Report_*.html
+*_Executive_Summary_Report_*.pdf
+*_Executive_Summary_Report_*.html
+*_Backup_Settings_Report_*.pdf
+*_Backup_Settings_Report_*.html

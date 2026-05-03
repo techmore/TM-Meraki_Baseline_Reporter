@@ -40,7 +40,8 @@ This project is currently functional as a Python reporting pipeline. The immedia
 ## Phase 3: Clean Report Project Shape - Active
 
 - Keep `legacy/` temporarily for reference.
-- Move historical scripts out of the default workflow.
+- ~~Move historical scripts out of the default workflow.~~
+- Document the current project shape and cleanup rules in `docs/project-shape.md`.
 - Decide whether to remove `legacy/` after the current report output is reproducible from the modern pipeline.
 - Keep `sample_data/` and `tests/fixtures/` as sanitized examples for development.
 - Check `iramku/Meraki-Security-Benchmark:Meraki-Security-Audit` periodically for conceptual updates, but port useful ideas manually rather than merging the branch.

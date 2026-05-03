@@ -55,7 +55,10 @@ ollama pull gemma4:e2b
 All output is written to `backups/<org>/` (gitignored):
 
 - `recommendations.md` — per-org findings and recommendations
-- `report.html` / `report.pdf` — full rendered report
+- `SITE_NAME_Complete_Report_YYYY-MM-DD.html` / `.pdf` — named full report for sharing
+- `SITE_NAME_Executive_Summary_Report_YYYY-MM-DD.html` / `.pdf` — named executive summary
+- `SITE_NAME_Backup_Settings_Report_YYYY-MM-DD.html` / `.pdf` — named backup settings report
+- `report.html` / `report.pdf` — compatibility aliases for older scripts
 - `backups/master_recommendations.md` — combined across all orgs
 - `backups/recommendations_ai_enhanced.md` — LLM-reviewed version
 
@@ -107,6 +110,13 @@ Run tests:
 ```bash
 pytest -q
 ```
+
+## Project Shape
+
+See `docs/project-shape.md` for the current file layout and cleanup rules. In
+short, `run.sh` remains the main user entrypoint, active reporting code lives in
+`reporting/`, root Python scripts are compatibility or pipeline stage
+entrypoints, and `legacy/` is retained only as historical reference.
 
 ## License
 
