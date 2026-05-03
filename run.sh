@@ -12,6 +12,7 @@ usage() {
   echo "      --report-only    Skip all data collection; build reports from existing backups/"
   echo "      --no-query       Skip API query + backup stages; use data already in backups/"
   echo "      --no-ai-review   Skip the Ollama review stage"
+  echo "      --health-check   Validate local environment and exit"
   echo "      --no-open        Do not open generated reports after a successful run"
   echo "      --help           Show this help"
   echo ""
@@ -141,6 +142,7 @@ REPORT_ONLY=0
 NO_AI_REVIEW=0
 NO_QUERY=0
 NO_OPEN=0
+HEALTH_CHECK=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model|-m)
@@ -161,6 +163,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-query)
       NO_QUERY=1
+      shift
+      ;;
+    --health-check)
+      HEALTH_CHECK=1
       shift
       ;;
     --help|-h)
@@ -188,6 +194,15 @@ if [[ -z "${PYTHON_BIN:-}" ]]; then
   else
     PYTHON_BIN="python3"
   fi
+fi
+
+if (( HEALTH_CHECK == 1 )); then
+  HEALTH_ARGS=()
+  if (( REPORT_ONLY == 1 || NO_QUERY == 1 )); then
+    HEALTH_ARGS+=("--report-only")
+  fi
+  "$PYTHON_BIN" -m reporting.health "${HEALTH_ARGS[@]+"${HEALTH_ARGS[@]}"}"
+  exit $?
 fi
 
 # ── Color palette (256-color) ───────────────────────────────────────────────

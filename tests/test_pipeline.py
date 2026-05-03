@@ -7,6 +7,7 @@ import pytest
 
 import merge_recommendations as mr
 import ollama_review as orv
+from reporting import health
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -133,3 +134,30 @@ class TestRunShSmoke:
         )
         assert result.returncode == 2
         assert "Unknown option" in result.stderr
+
+    def test_health_check_flag_exits_zero_for_report_only(self):
+        result = subprocess.run(
+            ["bash", str(PROJECT_ROOT / "run.sh"), "--report-only", "--health-check"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0
+        assert "Python runtime" in result.stdout
+        assert "MERAKI_API_KEY" in result.stdout
+
+
+class TestHealthChecks:
+    def test_report_only_health_does_not_require_api_key(self, monkeypatch, tmp_path):
+        backups = tmp_path / "backups"
+        (backups / "Org_A").mkdir(parents=True)
+        monkeypatch.setattr(health, "BACKUPS_DIR", backups)
+        monkeypatch.delenv("MERAKI_API_KEY", raising=False)
+        monkeypatch.setattr(health, "load_env", lambda path: None)
+        monkeypatch.setattr(health, "_env_value_from_file", lambda path, key: "")
+
+        checks = health.run_checks(require_api_key=False, require_backups=True)
+        by_name = {check.name: check for check in checks}
+        assert by_name["MERAKI_API_KEY"].status == "skip"
+        assert by_name["Org backups"].status == "ok"

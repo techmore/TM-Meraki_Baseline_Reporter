@@ -6,7 +6,7 @@ This project is currently functional as a Python reporting pipeline. The immedia
 
 - `./run.sh` is the main pipeline runner.
 - Python dependencies install cleanly into `.venv`.
-- Tests pass locally: `77 passed`.
+- Tests pass locally: `79 passed`.
 - Report-only generation works from existing `backups/`.
 - `.env` is gitignored and should remain local because it may contain `MERAKI_API_KEY`.
 - Clean-history repository is published at `https://github.com/techmore/TM-Meraki_Baseline_Reporter.git`.
@@ -51,7 +51,7 @@ This project is currently functional as a Python reporting pipeline. The immedia
 
 ## Phase 4: Reporting Improvements - Active
 
-- Add a small health-check command for validating `.env`, dependencies, Ollama availability, and backup directories.
+- ~~Add a small health-check command for validating `.env`, dependencies, Ollama availability, and backup directories.~~
 - Add clearer report modes:
   - full API collection
   - report-only from existing backups

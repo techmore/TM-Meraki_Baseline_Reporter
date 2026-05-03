@@ -10,6 +10,7 @@ local workflows.
 - `./install.sh` prepares a local `.venv` and checks common dependencies.
 - `python -m reporting` is the canonical direct report-generation command for
   existing backup data.
+- `python -m reporting.health` runs read-only environment checks.
 - `report_generator.py` is a compatibility entrypoint that calls
   `python -m reporting`.
 - `scripts/generate_report.py` is also retained as a compatibility wrapper.

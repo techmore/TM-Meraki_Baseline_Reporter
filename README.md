@@ -40,6 +40,13 @@ has diverged substantially and should not merge that branch wholesale.
 ./run.sh
 ```
 
+Check the local environment without running the pipeline:
+
+```bash
+./run.sh --health-check
+./run.sh --report-only --health-check
+```
+
 Optional — specify a local Ollama model for AI-enhanced recommendations:
 
 ```bash
