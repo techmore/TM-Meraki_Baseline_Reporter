@@ -47,7 +47,7 @@ This project is currently functional as a Python reporting pipeline. The immedia
 - Decide whether to remove `legacy/` after the current report output is reproducible from the modern pipeline.
 - Keep `sample_data/` and `tests/fixtures/` as sanitized examples for development.
 - Check `iramku/Meraki-Security-Benchmark:Meraki-Security-Audit` periodically for conceptual updates, but port useful ideas manually rather than merging the branch.
-- Consider replacing ad hoc top-level scripts with a clearer Python package entrypoint after the next stable report.
+- Add `python -m reporting` as the clearer package entrypoint while retaining compatibility wrappers.
 
 ## Phase 4: Reporting Improvements
 

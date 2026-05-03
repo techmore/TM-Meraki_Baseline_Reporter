@@ -9,7 +9,8 @@ A reporting pipeline that collects Meraki org data, generates network health and
 | `meraki_backup.py` | Pulls Meraki API data into per-org backup directories |
 | `merge_recommendations.py` | Combines per-org recommendation files |
 | `ollama_review.py` | Optional local LLM review stage |
-| `report_generator.py` | Renders HTML/PDF reports |
+| `python -m reporting` | Direct report generation from existing backup data |
+| `report_generator.py` | Compatibility wrapper for report generation |
 | `run.sh` | Full pipeline orchestrator |
 | `legacy/` | Original MX baseline scripts (reference only) |
 | `docs/cis-meraki-reference.md` | CIS Controls to Meraki reference mapping |
@@ -103,7 +104,7 @@ PY
 Run the script entrypoint against existing backups:
 
 ```bash
-python3 scripts/generate_report.py
+python3 -m reporting
 ./run.sh --report-only --no-ai-review --no-open
 ```
 

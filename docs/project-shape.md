@@ -8,10 +8,11 @@ the tests and report output can validate.
 
 - `./run.sh` is the main user-facing runner.
 - `./install.sh` prepares a local `.venv` and checks common dependencies.
-- `report_generator.py` is a compatibility entrypoint that calls
-  `reporting.app.main()`.
-- `scripts/generate_report.py` is a direct report-generation entrypoint for
+- `python -m reporting` is the canonical direct report-generation command for
   existing backup data.
+- `report_generator.py` is a compatibility entrypoint that calls
+  `python -m reporting`.
+- `scripts/generate_report.py` is also retained as a compatibility wrapper.
 
 ## Active Pipeline Stages
 
