@@ -123,6 +123,7 @@ class TestRunShSmoke:
         )
         assert result.returncode == 0
         assert "Usage: ./run.sh [options]" in result.stdout
+        assert "--demo-report" in result.stdout
 
     def test_unknown_flag_exits_two(self):
         result = subprocess.run(
@@ -161,3 +162,25 @@ class TestHealthChecks:
         by_name = {check.name: check for check in checks}
         assert by_name["MERAKI_API_KEY"].status == "skip"
         assert by_name["Org backups"].status == "ok"
+
+
+class TestReportingEntrypoint:
+    def test_single_source_generation_writes_named_aliases(self, monkeypatch, tmp_path):
+        from reporting import app
+
+        source = tmp_path / "source"
+        output = tmp_path / "output"
+        source.mkdir()
+        (source / "recommendations.md").write_text("# Meraki Recommendations: Demo Org\n", encoding="utf-8")
+
+        monkeypatch.setattr(app, "build_org_report", lambda org_dir, org_name, report_kind="full": f"<p>{report_kind}</p>")
+
+        def fake_write_pdf(html_path, pdf_path):
+            Path(pdf_path).write_text("pdf", encoding="utf-8")
+            return True
+
+        monkeypatch.setattr(app, "write_pdf", fake_write_pdf)
+
+        assert app.main(["--source-dir", str(source), "--output-dir", str(output)]) == 0
+        assert any(output.glob("Demo_Org_Complete_Report_*.pdf"))
+        assert (output / "report.pdf").exists()

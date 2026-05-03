@@ -11,6 +11,7 @@ usage() {
   echo "                       Default: gemma4:e2b"
   echo "      --report-only    Skip all data collection; build reports from existing backups/"
   echo "      --no-query       Skip API query + backup stages; use data already in backups/"
+  echo "      --demo-report    Build a report from sanitized test fixtures"
   echo "      --no-ai-review   Skip the Ollama review stage"
   echo "      --health-check   Validate local environment and exit"
   echo "      --no-open        Do not open generated reports after a successful run"
@@ -21,6 +22,7 @@ usage() {
   echo "    ./run.sh --model gemma4:e2b"
   echo "    ./run.sh --no-query                # re-generate reports from last backup"
   echo "    ./run.sh --report-only --no-ai-review"
+  echo "    ./run.sh --demo-report --no-open"
 }
 
 validate_environment() {
@@ -143,6 +145,7 @@ NO_AI_REVIEW=0
 NO_QUERY=0
 NO_OPEN=0
 HEALTH_CHECK=0
+DEMO_REPORT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model|-m)
@@ -163,6 +166,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-query)
       NO_QUERY=1
+      shift
+      ;;
+    --demo-report)
+      DEMO_REPORT=1
       shift
       ;;
     --health-check)
@@ -203,6 +210,26 @@ if (( HEALTH_CHECK == 1 )); then
   fi
   "$PYTHON_BIN" -m reporting.health "${HEALTH_ARGS[@]+"${HEALTH_ARGS[@]}"}"
   exit $?
+fi
+
+if (( DEMO_REPORT == 1 )); then
+  DEMO_OUTPUT="backups/.demo/Fixture_Demo_Org"
+  "$PYTHON_BIN" -m reporting \
+    --source-dir tests/fixtures \
+    --org-name "Fixture Demo Org" \
+    --output-dir "$DEMO_OUTPUT"
+  demo_status=$?
+  if (( NO_OPEN == 0 )); then
+    demo_report=$(find "$DEMO_OUTPUT" -maxdepth 1 -type f -name '*_Complete_Report_*.pdf' | sort | tail -n 1)
+    if [[ -n "$demo_report" ]]; then
+      if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$demo_report"
+      elif command -v open >/dev/null 2>&1; then
+        open "$demo_report"
+      fi
+    fi
+  fi
+  exit "$demo_status"
 fi
 
 # ── Color palette (256-color) ───────────────────────────────────────────────

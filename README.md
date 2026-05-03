@@ -47,6 +47,12 @@ Check the local environment without running the pipeline:
 ./run.sh --report-only --health-check
 ```
 
+Generate a demo report from sanitized fixtures without Meraki API access:
+
+```bash
+./run.sh --demo-report --no-open
+```
+
 Optional — specify a local Ollama model for AI-enhanced recommendations:
 
 ```bash
@@ -112,6 +118,7 @@ Run the script entrypoint against existing backups:
 
 ```bash
 python3 -m reporting
+python3 -m reporting --source-dir tests/fixtures --org-name "Fixture Demo Org" --output-dir backups/.demo/Fixture_Demo_Org
 ./run.sh --report-only --no-ai-review --no-open
 ```
 

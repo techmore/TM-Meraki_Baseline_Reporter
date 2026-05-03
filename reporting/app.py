@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import logging
 import os
 import re
@@ -43,6 +44,90 @@ def _report_slug(name: str) -> str:
 def _dated_report_name(org_name: str, label: str, run_ts: datetime, ext: str) -> str:
     date_stamp = run_ts.strftime("%Y-%m-%d")
     return f"{_report_slug(org_name)}_{label}_Report_{date_stamp}.{ext}"
+
+
+def _read_org_name(org_dir: str) -> str:
+    name_file = os.path.join(org_dir, "org_name.txt")
+    if os.path.exists(name_file):
+        with open(name_file, "r", encoding="utf-8") as nf:
+            return nf.read().strip()
+
+    org_name = os.path.basename(org_dir)
+    rec_path = os.path.join(org_dir, "recommendations.md")
+    if os.path.exists(rec_path):
+        with open(rec_path, "r", encoding="utf-8") as f:
+            first_line = f.readline().strip()
+            m = re.match(r"# Meraki Recommendations: (.+)$", first_line)
+            if m:
+                org_name = m.group(1)
+    return org_name
+
+
+def _write_text_aliases(html: str, paths: tuple[str, ...]) -> None:
+    for path in paths:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(html)
+
+
+def generate_org_reports(source_dir: str, org_name: str, output_dir: str | None = None) -> int:
+    output_dir = output_dir or source_dir
+    os.makedirs(output_dir, exist_ok=True)
+
+    log.info("Generating report for: %s", org_name)
+    _run_ts = datetime.now()
+    _slug = _report_slug(org_name)
+    _stamp = _run_ts.strftime("%Y-%m-%d_%H%M")
+
+    body = build_org_report(source_dir, org_name)
+    html = build_html(f"{org_name} — Network Health Report", body)
+    html_path = os.path.join(output_dir, f"{_slug}_{_stamp}_report.html")
+    pdf_path = os.path.join(output_dir, f"{_slug}_{_stamp}_report.pdf")
+    named_html_alias = os.path.join(output_dir, _dated_report_name(org_name, "Complete", _run_ts, "html"))
+    named_pdf_alias = os.path.join(output_dir, _dated_report_name(org_name, "Complete", _run_ts, "pdf"))
+    html_alias = os.path.join(output_dir, "report.html")
+    pdf_alias = os.path.join(output_dir, "report.pdf")
+
+    _write_text_aliases(html, (html_path, named_html_alias, html_alias))
+    if write_pdf(html_path, pdf_path):
+        shutil.copy2(pdf_path, named_pdf_alias)
+        shutil.copy2(pdf_path, pdf_alias)
+        log.info("PDF → %s", named_pdf_alias)
+    else:
+        log.info("HTML → %s  (no PDF tool found)", html_path)
+
+    exec_body = build_org_report(source_dir, org_name, report_kind="exec")
+    exec_html = build_html(f"{org_name} — Executive Summary", exec_body)
+    exec_html_path = os.path.join(output_dir, f"{_slug}_{_stamp}_exec_summary_report.html")
+    exec_pdf_path = os.path.join(output_dir, f"{_slug}_{_stamp}_exec_summary_report.pdf")
+    exec_named_html_alias = os.path.join(output_dir, _dated_report_name(org_name, "Executive_Summary", _run_ts, "html"))
+    exec_named_pdf_alias = os.path.join(output_dir, _dated_report_name(org_name, "Executive_Summary", _run_ts, "pdf"))
+    exec_html_alias = os.path.join(output_dir, "report_exec_summary.html")
+    exec_pdf_alias = os.path.join(output_dir, "report_exec_summary.pdf")
+    _write_text_aliases(exec_html, (exec_html_path, exec_named_html_alias, exec_html_alias))
+    if write_pdf(exec_html_path, exec_pdf_path):
+        shutil.copy2(exec_pdf_path, exec_named_pdf_alias)
+        shutil.copy2(exec_pdf_path, exec_pdf_alias)
+        log.info("Exec Summary PDF → %s", exec_named_pdf_alias)
+    else:
+        log.info("Exec Summary HTML → %s  (no PDF tool found)", exec_html_path)
+
+    backup_body = build_org_report(source_dir, org_name, report_kind="backup")
+    backup_html = build_html(f"{org_name} — Backup Settings Report", backup_body)
+    backup_html_path = os.path.join(output_dir, f"{_slug}_{_stamp}_backup_settings_report.html")
+    backup_pdf_path = os.path.join(output_dir, f"{_slug}_{_stamp}_backup_settings_report.pdf")
+    backup_named_html_alias = os.path.join(output_dir, _dated_report_name(org_name, "Backup_Settings", _run_ts, "html"))
+    backup_named_pdf_alias = os.path.join(output_dir, _dated_report_name(org_name, "Backup_Settings", _run_ts, "pdf"))
+    backup_html_alias = os.path.join(output_dir, "report_backup_settings.html")
+    backup_pdf_alias = os.path.join(output_dir, "report_backup_settings.pdf")
+    _write_text_aliases(backup_html, (backup_html_path, backup_named_html_alias, backup_html_alias))
+    if write_pdf(backup_html_path, backup_pdf_path):
+        shutil.copy2(backup_pdf_path, backup_named_pdf_alias)
+        shutil.copy2(backup_pdf_path, backup_pdf_alias)
+        log.info("Backup Settings PDF → %s", backup_named_pdf_alias)
+    else:
+        log.info("Backup Settings HTML → %s  (no PDF tool found)", backup_html_path)
+
+    return 1
 
 def build_org_report(
     org_dir: str,
@@ -2729,7 +2814,24 @@ def build_org_report(
         return backup_body
     return full_body
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate Meraki HTML/PDF reports.")
+    parser.add_argument("--source-dir", help="Generate reports from a single backup/fixture directory.")
+    parser.add_argument("--org-name", help="Display name for --source-dir reports.")
+    parser.add_argument("--output-dir", help="Directory for generated reports when using --source-dir.")
+    args = parser.parse_args(argv)
+
+    if args.source_dir:
+        source_dir = os.path.abspath(args.source_dir)
+        if not os.path.isdir(source_dir):
+            log.error("Source directory not found: %s", source_dir)
+            return 1
+        org_name = args.org_name or _read_org_name(source_dir)
+        output_dir = os.path.abspath(args.output_dir) if args.output_dir else None
+        generated = generate_org_reports(source_dir, org_name, output_dir=output_dir)
+        log.info("Done — %d report(s) generated.", generated)
+        return 0
+
     org_dirs = find_org_dirs(BACKUPS_DIR)
     if not org_dirs:
         log.error("No org directories found in %s/", BACKUPS_DIR)
@@ -2738,106 +2840,7 @@ def main() -> int:
 
     generated = 0
     for org_dir in org_dirs:
-        # Read display name from org_name.txt; fall back to directory name
-        name_file = os.path.join(org_dir, "org_name.txt")
-        if os.path.exists(name_file):
-            with open(name_file, "r", encoding="utf-8") as nf:
-                org_name = nf.read().strip()
-        else:
-            # Legacy fallback: derive from recommendations.md header
-            org_name = os.path.basename(org_dir)
-            rec_path = os.path.join(org_dir, "recommendations.md")
-            if os.path.exists(rec_path):
-                with open(rec_path, "r", encoding="utf-8") as f:
-                    first_line = f.readline().strip()
-                    m = re.match(r"# Meraki Recommendations: (.+)$", first_line)
-                    if m:
-                        org_name = m.group(1)
-
-        log.info("Generating report for: %s", org_name)
-        _run_ts = datetime.now()
-        body = build_org_report(org_dir, org_name)
-        html = build_html(f"{org_name} — Network Health Report", body)
-
-        _slug = _report_slug(org_name)
-        _stamp = _run_ts.strftime("%Y-%m-%d_%H%M")
-        html_path = os.path.join(org_dir, f"{_slug}_{_stamp}_report.html")
-        pdf_path  = os.path.join(org_dir, f"{_slug}_{_stamp}_report.pdf")
-        named_html_alias = os.path.join(
-            org_dir, _dated_report_name(org_name, "Complete", _run_ts, "html")
-        )
-        named_pdf_alias = os.path.join(
-            org_dir, _dated_report_name(org_name, "Complete", _run_ts, "pdf")
-        )
-        # Compatibility aliases so older downstream scripts still find report.html/pdf.
-        html_alias = os.path.join(org_dir, "report.html")
-        pdf_alias  = os.path.join(org_dir, "report.pdf")
-
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html)
-        # Overwrite aliases (plain copies — no symlinks for cross-platform safety).
-        for alias in (named_html_alias, html_alias):
-            with open(alias, "w", encoding="utf-8") as f:
-                f.write(html)
-
-        ok = write_pdf(html_path, pdf_path)
-        if ok:
-            shutil.copy2(pdf_path, named_pdf_alias)
-            shutil.copy2(pdf_path, pdf_alias)
-            log.info("PDF → %s", named_pdf_alias)
-        else:
-            log.info("HTML → %s  (no PDF tool found)", html_path)
-        generated += 1
-
-        # Executive summary split report
-        exec_body = build_org_report(org_dir, org_name, report_kind="exec")
-        exec_html = build_html(f"{org_name} — Executive Summary", exec_body)
-        exec_html_path = os.path.join(org_dir, f"{_slug}_{_stamp}_exec_summary_report.html")
-        exec_pdf_path  = os.path.join(org_dir, f"{_slug}_{_stamp}_exec_summary_report.pdf")
-        exec_named_html_alias = os.path.join(
-            org_dir, _dated_report_name(org_name, "Executive_Summary", _run_ts, "html")
-        )
-        exec_named_pdf_alias = os.path.join(
-            org_dir, _dated_report_name(org_name, "Executive_Summary", _run_ts, "pdf")
-        )
-        exec_html_alias = os.path.join(org_dir, "report_exec_summary.html")
-        exec_pdf_alias  = os.path.join(org_dir, "report_exec_summary.pdf")
-        with open(exec_html_path, "w", encoding="utf-8") as f:
-            f.write(exec_html)
-        for alias in (exec_named_html_alias, exec_html_alias):
-            with open(alias, "w", encoding="utf-8") as f:
-                f.write(exec_html)
-        if write_pdf(exec_html_path, exec_pdf_path):
-            shutil.copy2(exec_pdf_path, exec_named_pdf_alias)
-            shutil.copy2(exec_pdf_path, exec_pdf_alias)
-            log.info("Exec Summary PDF → %s", exec_named_pdf_alias)
-        else:
-            log.info("Exec Summary HTML → %s  (no PDF tool found)", exec_html_path)
-
-        # Backup settings split report
-        backup_body = build_org_report(org_dir, org_name, report_kind="backup")
-        backup_html = build_html(f"{org_name} — Backup Settings Report", backup_body)
-        backup_html_path = os.path.join(org_dir, f"{_slug}_{_stamp}_backup_settings_report.html")
-        backup_pdf_path  = os.path.join(org_dir, f"{_slug}_{_stamp}_backup_settings_report.pdf")
-        backup_named_html_alias = os.path.join(
-            org_dir, _dated_report_name(org_name, "Backup_Settings", _run_ts, "html")
-        )
-        backup_named_pdf_alias = os.path.join(
-            org_dir, _dated_report_name(org_name, "Backup_Settings", _run_ts, "pdf")
-        )
-        backup_html_alias = os.path.join(org_dir, "report_backup_settings.html")
-        backup_pdf_alias  = os.path.join(org_dir, "report_backup_settings.pdf")
-        with open(backup_html_path, "w", encoding="utf-8") as f:
-            f.write(backup_html)
-        for alias in (backup_named_html_alias, backup_html_alias):
-            with open(alias, "w", encoding="utf-8") as f:
-                f.write(backup_html)
-        if write_pdf(backup_html_path, backup_pdf_path):
-            shutil.copy2(backup_pdf_path, backup_named_pdf_alias)
-            shutil.copy2(backup_pdf_path, backup_pdf_alias)
-            log.info("Backup Settings PDF → %s", backup_named_pdf_alias)
-        else:
-            log.info("Backup Settings HTML → %s  (no PDF tool found)", backup_html_path)
+        generated += generate_org_reports(org_dir, _read_org_name(org_dir))
 
     log.info("Done — %d report(s) generated.", generated)
     return 0
