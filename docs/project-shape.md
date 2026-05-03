@@ -1,8 +1,8 @@
 # Project Shape
 
-This repository is intentionally staying Python-first. The current cleanup goal
-is to make the working pipeline obvious without moving active code faster than
-the tests and report output can validate.
+This repository is intentionally staying Python-first. The current shape keeps
+the working pipeline obvious while preserving compatibility wrappers for older
+local workflows.
 
 ## Active Entry Points
 
@@ -43,6 +43,8 @@ the tests and report output can validate.
   tests.
 - `sample_data/` is for small development examples that can be committed safely.
 - `backups/` is generated runtime output and must remain untracked.
+- See `sample_data/README.md` and `tests/fixtures/README.md` before adding new
+  sample inputs.
 
 ## Cleanup Rules
 

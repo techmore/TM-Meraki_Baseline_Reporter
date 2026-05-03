@@ -1,6 +1,6 @@
 # TM Meraki Reporter Roadmap
 
-This project is currently functional as a Python reporting pipeline. The immediate focus is Phase 3: clean the project shape while keeping report output reproducible.
+This project is currently functional as a Python reporting pipeline. The immediate focus is Phase 4: reporting improvements and clearer run modes.
 
 ## Current State
 
@@ -37,19 +37,19 @@ This project is currently functional as a Python reporting pipeline. The immedia
 - ~~Prefer a clean-history import into `https://github.com/techmore/TM-Meraki_Baseline_Reporter.git` rather than pushing the old history.~~
 - ~~Push only code, docs, tests, and sanitized examples.~~
 
-## Phase 3: Clean Report Project Shape - Active
+## Phase 3: Clean Report Project Shape - Complete
 
-- Keep `legacy/` temporarily for reference.
+- ~~Keep `legacy/` temporarily for reference.~~
 - ~~Move historical scripts out of the default workflow.~~
-- Document the current project shape and cleanup rules in `docs/project-shape.md`.
-- Move report-writing reference material under `docs/reporting/`.
-- Move historical audit notes under `docs/repository-audit.md`.
-- Decide whether to remove `legacy/` after the current report output is reproducible from the modern pipeline.
-- Keep `sample_data/` and `tests/fixtures/` as sanitized examples for development.
-- Check `iramku/Meraki-Security-Benchmark:Meraki-Security-Audit` periodically for conceptual updates, but port useful ideas manually rather than merging the branch.
-- Add `python -m reporting` as the clearer package entrypoint while retaining compatibility wrappers.
+- ~~Document the current project shape and cleanup rules in `docs/project-shape.md`.~~
+- ~~Move report-writing reference material under `docs/reporting/`.~~
+- ~~Move historical audit notes under `docs/repository-audit.md`.~~
+- ~~Decide whether to remove `legacy/` after the current report output is reproducible from the modern pipeline.~~
+- ~~Keep `sample_data/` and `tests/fixtures/` as sanitized examples for development.~~
+- ~~Check `iramku/Meraki-Security-Benchmark:Meraki-Security-Audit` periodically for conceptual updates, but port useful ideas manually rather than merging the branch.~~
+- ~~Add `python -m reporting` as the clearer package entrypoint while retaining compatibility wrappers.~~
 
-## Phase 4: Reporting Improvements
+## Phase 4: Reporting Improvements - Active
 
 - Add a small health-check command for validating `.env`, dependencies, Ollama availability, and backup directories.
 - Add clearer report modes:
