@@ -17,7 +17,7 @@ usage() {
   echo ""
   echo "  Examples:"
   echo "    ./run.sh                           # full run — always fetches fresh data"
-  echo "    ./run.sh --model gemma4:e4b"
+  echo "    ./run.sh --model gemma4:e2b"
   echo "    ./run.sh --no-query                # re-generate reports from last backup"
   echo "    ./run.sh --report-only --no-ai-review"
 }
@@ -386,10 +386,8 @@ run_stage() {
     extra_args+=("--force-refresh")   # always fetch fresh — use --no-query to skip entirely
   fi
 
-  set +e
   "$PYTHON_BIN" "$script" "${extra_args[@]+"${extra_args[@]}"}" > "$tmp" 2>&1
   local exit_code=$?
-  set -e
 
   kill "$spin_pid" 2>/dev/null
   wait "$spin_pid" 2>/dev/null

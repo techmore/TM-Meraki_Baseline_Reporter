@@ -42,7 +42,7 @@ has diverged substantially and should not merge that branch wholesale.
 Optional — specify a local Ollama model for AI-enhanced recommendations:
 
 ```bash
-./run.sh --model gemma4:e4b
+./run.sh --model gemma4:e2b
 ```
 
 The default Ollama model is `gemma4:e2b`, chosen for lower RAM usage. Pull it
