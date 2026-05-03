@@ -13,6 +13,7 @@ A reporting pipeline that collects Meraki org data, generates network health and
 | `run.sh` | Full pipeline orchestrator |
 | `legacy/` | Original MX baseline scripts (reference only) |
 | `docs/cis-meraki-reference.md` | CIS Controls to Meraki reference mapping |
+| `docs/reporting/` | Report-writing guide and `.docx` template references |
 
 ## Lineage
 

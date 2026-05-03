@@ -10,5 +10,7 @@ These scripts are superseded by the current pipeline (`meraki_backup.py` → `me
 | `v6-mdm.py` | MDM variant of v6 baseline |
 | `v9.py` | v9 iteration before pipeline refactor |
 | `networking-script-no-topography.py` | Pre-topology version of the network report |
+| `license.py` | Older one-off license overview helper that reads `api_keys_org_ids.txt` |
+| `orgs.sh` | Older one-off organization listing helper |
 
 Use `report_generator.py` for all current reporting needs.

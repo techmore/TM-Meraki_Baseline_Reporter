@@ -28,8 +28,11 @@ the tests and report output can validate.
 - `legacy/` contains older baseline/reporting scripts. They are not part of the
   production workflow and should not be called by `run.sh`.
 - `docs/cis-meraki-reference.md` preserves the upstream CIS mapping reference.
-- `draft-reporting-guide.md` and `network-assessment-report-template.docx` are
-  retained as report-writing references for now.
+- `docs/reporting/draft-reporting-guide.md` and
+  `docs/reporting/network-assessment-report-template.docx` are retained as
+  report-writing references for now.
+- Older one-off helper scripts that are not part of the pipeline live in
+  `legacy/`.
 
 ## Test And Sample Data
 

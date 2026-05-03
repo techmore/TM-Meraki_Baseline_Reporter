@@ -28,8 +28,8 @@ This project is currently functional as a Python reporting pipeline. The immedia
 
 - ~~Review untracked local files before any commit:~~
   - `.claude/`
-  - `draft-reporting-guide.md`
-  - `network-assessment-report-template.docx`
+  - `docs/reporting/draft-reporting-guide.md`
+  - `docs/reporting/network-assessment-report-template.docx`
 - ~~Confirm no live credentials are tracked:~~
   - `.env` must stay ignored.
   - generated `backups/` should stay ignored unless a sanitized sample is intentionally added.
@@ -42,6 +42,7 @@ This project is currently functional as a Python reporting pipeline. The immedia
 - Keep `legacy/` temporarily for reference.
 - ~~Move historical scripts out of the default workflow.~~
 - Document the current project shape and cleanup rules in `docs/project-shape.md`.
+- Move report-writing reference material under `docs/reporting/`.
 - Decide whether to remove `legacy/` after the current report output is reproducible from the modern pipeline.
 - Keep `sample_data/` and `tests/fixtures/` as sanitized examples for development.
 - Check `iramku/Meraki-Security-Benchmark:Meraki-Security-Audit` periodically for conceptual updates, but port useful ideas manually rather than merging the branch.
