@@ -1,6 +1,7 @@
 """Tests for reporting/app.py — build_org_report() with fixture data."""
 import os
 import sys
+from datetime import datetime
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -88,6 +89,16 @@ class TestBuildOrgReport:
         html = build_org_report(FIXTURES, "Test Org", report_kind="backup")
         assert "Network Overview" in html
         assert "Executive Summary" not in html
+
+    def test_dated_complete_report_filename(self):
+        from reporting.app import _dated_report_name
+        filename = _dated_report_name(
+            "William Penn Charter School",
+            "Complete",
+            datetime(2026, 5, 2, 21, 30),
+            "pdf",
+        )
+        assert filename == "William_Penn_Charter_School_Complete_Report_2026-05-02.pdf"
 
 
 class TestHealthCardRatings:

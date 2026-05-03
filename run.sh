@@ -545,8 +545,14 @@ if (( FAIL_COUNT == 0 )); then
   elif [[ -d "$BACKUPS_DIR" ]]; then
    REPORT_FILES=()
    while IFS= read -r org_dir; do
-     if [[ -f "$org_dir/report.pdf" ]]; then
+     named_report=$(find "$org_dir" -maxdepth 1 -type f -name '*_Complete_Report_*.pdf' | sort | tail -n 1)
+     named_html=$(find "$org_dir" -maxdepth 1 -type f -name '*_Complete_Report_*.html' | sort | tail -n 1)
+     if [[ -n "$named_report" ]]; then
+       REPORT_FILES+=("$named_report")
+     elif [[ -f "$org_dir/report.pdf" ]]; then
        REPORT_FILES+=("$org_dir/report.pdf")
+     elif [[ -n "$named_html" ]]; then
+       REPORT_FILES+=("$named_html")
      elif [[ -f "$org_dir/report.html" ]]; then
        REPORT_FILES+=("$org_dir/report.html")
      fi

@@ -2,6 +2,7 @@
 import logging
 import os
 import re
+import shutil
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
@@ -32,6 +33,16 @@ from .html_shell import build_html, write_pdf
 
 log = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _report_slug(name: str) -> str:
+    slug = re.sub(r"[^\w]+", "_", name or "Site").strip("_")
+    return slug or "Site"
+
+
+def _dated_report_name(org_name: str, label: str, run_ts: datetime, ext: str) -> str:
+    date_stamp = run_ts.strftime("%Y-%m-%d")
+    return f"{_report_slug(org_name)}_{label}_Report_{date_stamp}.{ext}"
 
 def build_org_report(
     org_dir: str,
@@ -2748,25 +2759,32 @@ def main() -> int:
         body = build_org_report(org_dir, org_name)
         html = build_html(f"{org_name} — Network Health Report", body)
 
-        _slug = re.sub(r"[^\w]+", "_", org_name).strip("_")
+        _slug = _report_slug(org_name)
         _stamp = _run_ts.strftime("%Y-%m-%d_%H%M")
         html_path = os.path.join(org_dir, f"{_slug}_{_stamp}_report.html")
         pdf_path  = os.path.join(org_dir, f"{_slug}_{_stamp}_report.pdf")
-        # Stable aliases so downstream scripts and run.sh always find report.html/pdf
+        named_html_alias = os.path.join(
+            org_dir, _dated_report_name(org_name, "Complete", _run_ts, "html")
+        )
+        named_pdf_alias = os.path.join(
+            org_dir, _dated_report_name(org_name, "Complete", _run_ts, "pdf")
+        )
+        # Compatibility aliases so older downstream scripts still find report.html/pdf.
         html_alias = os.path.join(org_dir, "report.html")
         pdf_alias  = os.path.join(org_dir, "report.pdf")
 
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html)
-        # Overwrite alias (plain copy — no symlinks for cross-platform safety)
-        with open(html_alias, "w", encoding="utf-8") as f:
-            f.write(html)
+        # Overwrite aliases (plain copies — no symlinks for cross-platform safety).
+        for alias in (named_html_alias, html_alias):
+            with open(alias, "w", encoding="utf-8") as f:
+                f.write(html)
 
         ok = write_pdf(html_path, pdf_path)
         if ok:
-            import shutil
+            shutil.copy2(pdf_path, named_pdf_alias)
             shutil.copy2(pdf_path, pdf_alias)
-            log.info("PDF → %s", pdf_path)
+            log.info("PDF → %s", named_pdf_alias)
         else:
             log.info("HTML → %s  (no PDF tool found)", html_path)
         generated += 1
@@ -2776,16 +2794,23 @@ def main() -> int:
         exec_html = build_html(f"{org_name} — Executive Summary", exec_body)
         exec_html_path = os.path.join(org_dir, f"{_slug}_{_stamp}_exec_summary_report.html")
         exec_pdf_path  = os.path.join(org_dir, f"{_slug}_{_stamp}_exec_summary_report.pdf")
+        exec_named_html_alias = os.path.join(
+            org_dir, _dated_report_name(org_name, "Executive_Summary", _run_ts, "html")
+        )
+        exec_named_pdf_alias = os.path.join(
+            org_dir, _dated_report_name(org_name, "Executive_Summary", _run_ts, "pdf")
+        )
         exec_html_alias = os.path.join(org_dir, "report_exec_summary.html")
         exec_pdf_alias  = os.path.join(org_dir, "report_exec_summary.pdf")
         with open(exec_html_path, "w", encoding="utf-8") as f:
             f.write(exec_html)
-        with open(exec_html_alias, "w", encoding="utf-8") as f:
-            f.write(exec_html)
+        for alias in (exec_named_html_alias, exec_html_alias):
+            with open(alias, "w", encoding="utf-8") as f:
+                f.write(exec_html)
         if write_pdf(exec_html_path, exec_pdf_path):
-            import shutil
+            shutil.copy2(exec_pdf_path, exec_named_pdf_alias)
             shutil.copy2(exec_pdf_path, exec_pdf_alias)
-            log.info("Exec Summary PDF → %s", exec_pdf_path)
+            log.info("Exec Summary PDF → %s", exec_named_pdf_alias)
         else:
             log.info("Exec Summary HTML → %s  (no PDF tool found)", exec_html_path)
 
@@ -2794,16 +2819,23 @@ def main() -> int:
         backup_html = build_html(f"{org_name} — Backup Settings Report", backup_body)
         backup_html_path = os.path.join(org_dir, f"{_slug}_{_stamp}_backup_settings_report.html")
         backup_pdf_path  = os.path.join(org_dir, f"{_slug}_{_stamp}_backup_settings_report.pdf")
+        backup_named_html_alias = os.path.join(
+            org_dir, _dated_report_name(org_name, "Backup_Settings", _run_ts, "html")
+        )
+        backup_named_pdf_alias = os.path.join(
+            org_dir, _dated_report_name(org_name, "Backup_Settings", _run_ts, "pdf")
+        )
         backup_html_alias = os.path.join(org_dir, "report_backup_settings.html")
         backup_pdf_alias  = os.path.join(org_dir, "report_backup_settings.pdf")
         with open(backup_html_path, "w", encoding="utf-8") as f:
             f.write(backup_html)
-        with open(backup_html_alias, "w", encoding="utf-8") as f:
-            f.write(backup_html)
+        for alias in (backup_named_html_alias, backup_html_alias):
+            with open(alias, "w", encoding="utf-8") as f:
+                f.write(backup_html)
         if write_pdf(backup_html_path, backup_pdf_path):
-            import shutil
+            shutil.copy2(backup_pdf_path, backup_named_pdf_alias)
             shutil.copy2(backup_pdf_path, backup_pdf_alias)
-            log.info("Backup Settings PDF → %s", backup_pdf_path)
+            log.info("Backup Settings PDF → %s", backup_named_pdf_alias)
         else:
             log.info("Backup Settings HTML → %s  (no PDF tool found)", backup_html_path)
 

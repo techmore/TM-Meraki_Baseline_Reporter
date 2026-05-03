@@ -53,6 +53,7 @@ class TestOllamaReview:
 
     def test_review_content_uses_synthesis_for_multiple_chunks(self, monkeypatch):
         calls = []
+        unloads = []
 
         def fake_stream(content, prompt_template=orv.USER_PROMPT_TEMPLATE):
             calls.append((content, prompt_template))
@@ -61,12 +62,21 @@ class TestOllamaReview:
             return "## Chunk Review\n\nChunk details"
 
         monkeypatch.setattr(orv, "stream_ollama", fake_stream)
+        monkeypatch.setattr(orv, "unload_ollama_model", lambda: unloads.append(True))
         monkeypatch.setattr(orv, "MAX_INPUT_CHARS", 35)
         content = "# One\n" + ("A" * 40) + "\n# Two\n" + ("B" * 40)
         reviewed = orv.review_content(content)
         assert "section-aware chunks" in reviewed
         assert "## Final" in reviewed
         assert any(prompt == orv.SYNTHESIS_PROMPT_TEMPLATE for _, prompt in calls)
+        assert len(unloads) == len(calls)
+
+    def test_stream_ollama_once_unloads_after_generation(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(orv, "stream_ollama", lambda content, prompt_template=orv.USER_PROMPT_TEMPLATE: "ok")
+        monkeypatch.setattr(orv, "unload_ollama_model", lambda: calls.append("unloaded"))
+        assert orv.stream_ollama_once("body") == "ok"
+        assert calls == ["unloaded"]
 
     def test_main_skips_when_master_recommendations_missing(self, monkeypatch, tmp_path):
         monkeypatch.setattr(orv, "BACKUPS_DIR", str(tmp_path))

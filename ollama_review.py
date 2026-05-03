@@ -226,20 +226,51 @@ def stream_ollama(content: str, prompt_template: str = USER_PROMPT_TEMPLATE) -> 
     return "".join(tokens).strip()
 
 
+def unload_ollama_model() -> None:
+    """Ask Ollama to unload the active model so it does not sit in RAM."""
+    payload = json.dumps(
+        {
+            "model": MODEL,
+            "prompt": "",
+            "stream": False,
+            "keep_alive": 0,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+        log.info("Unloaded Ollama model: %s", MODEL)
+    except Exception as exc:
+        log.warning("Could not unload Ollama model '%s': %s", MODEL, exc)
+
+
+def stream_ollama_once(content: str, prompt_template: str = USER_PROMPT_TEMPLATE) -> str:
+    """Run one Ollama pass and unload the model immediately afterward."""
+    try:
+        return stream_ollama(content, prompt_template=prompt_template)
+    finally:
+        unload_ollama_model()
+
+
 def review_content(content: str) -> str:
     chunks = build_review_chunks(content, MAX_INPUT_CHARS)
     if len(chunks) == 1:
-        return stream_ollama(chunks[0])
+        return stream_ollama_once(chunks[0])
 
     chunk_reviews = []
     for idx, chunk in enumerate(chunks, start=1):
         print(f"  Reviewing chunk {idx}/{len(chunks)}", flush=True)
-        reviewed = stream_ollama(f"[Chunk {idx}/{len(chunks)}]\n\n{chunk}")
+        reviewed = stream_ollama_once(f"[Chunk {idx}/{len(chunks)}]\n\n{chunk}")
         chunk_reviews.append(f"## Chunk {idx}\n\n{reviewed}")
 
     synthesis_input = "\n\n".join(chunk_reviews)
     print(f"  Synthesizing {len(chunks)} chunk reviews", flush=True)
-    final_review = stream_ollama(synthesis_input, prompt_template=SYNTHESIS_PROMPT_TEMPLATE)
+    final_review = stream_ollama_once(synthesis_input, prompt_template=SYNTHESIS_PROMPT_TEMPLATE)
     return (
         "> Note: This AI review was generated from section-aware chunks and then synthesized.\n\n"
         + final_review
