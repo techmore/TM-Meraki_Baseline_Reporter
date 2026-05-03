@@ -1,5 +1,13 @@
 # Repository Audit Issues
 
+> Status note, 2026-05-03: this file is retained as the original cleanup audit
+> snapshot. Several items below have since been addressed in the clean-history
+> repository, including `.env`/`backups/` ignores, `requirements.txt`,
+> `install.sh`, CI, tests, removal of hardcoded local paths, safer PDF fallback
+> execution, `--no-open`, and report generator modularization into
+> `reporting/`. Treat the remaining items as historical audit context, not a
+> fully current issue tracker.
+
 ## Repository Overview
 Purpose: Generate Meraki network health reports (HTML/PDF) from Meraki API backups, with optional Ollama review and a shell pipeline.
 

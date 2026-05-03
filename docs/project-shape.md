@@ -31,6 +31,8 @@ the tests and report output can validate.
 - `docs/reporting/draft-reporting-guide.md` and
   `docs/reporting/network-assessment-report-template.docx` are retained as
   report-writing references for now.
+- `docs/repository-audit.md` is the historical cleanup audit snapshot. It is
+  useful context, but its issue list is not fully current.
 - Older one-off helper scripts that are not part of the pipeline live in
   `legacy/`.
 
