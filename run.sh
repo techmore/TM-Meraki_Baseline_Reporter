@@ -73,7 +73,7 @@ PY
     fi
   else
     printf "  ${DIM2}│${R}  Checking MERAKI_API_KEY... "
-    if [[ -n "${MERAKI_API_KEY:-}" ]] || ([[ -f .env ]] && rg -q '^MERAKI_API_KEY=' .env); then
+    if has_meraki_api_key; then
       echo -e "${GRN}ok${R}"
     else
       echo -e "${RED}missing${R}"
@@ -105,6 +105,34 @@ PY
   fi
 
   return "$failures"
+}
+
+has_meraki_api_key() {
+  if [[ -n "${MERAKI_API_KEY:-}" && "${MERAKI_API_KEY}" != "your_key_here" ]]; then
+    return 0
+  fi
+
+  [[ -f .env ]] || return 1
+
+  local line key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    if [[ "$key" == "MERAKI_API_KEY" && -n "$value" && "$value" != "your_key_here" ]]; then
+      return 0
+    fi
+  done < .env
+
+  return 1
 }
 
 # ── Flag parsing ─────────────────────────────────────────────────────────────
