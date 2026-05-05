@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import logging
 import math
 import os
@@ -59,6 +60,7 @@ UPS_REFERENCE_PATH = os.path.join(
     "reference",
     "ups_runtime_reference.json",
 )
+UPS_LOAD_BUFFER_RATIO = 0.10
 
 
 def _report_slug(name: str) -> str:
@@ -168,6 +170,319 @@ def _interpolate_runtime_minutes(points: Any, watts: float) -> float | None:
     return None
 
 
+def _catalog_poe_budget(hardware_catalog: Dict[str, Any], model: str) -> int | float | None:
+    models = (
+        hardware_catalog.get("models")
+        if isinstance(hardware_catalog, dict) and isinstance(hardware_catalog.get("models"), dict)
+        else {}
+    )
+    ref = models.get(model) or {}
+    budget = ref.get("poeBudgetWatts") if isinstance(ref, dict) else None
+    return budget if isinstance(budget, (int, float)) else None
+
+
+def _estimated_switch_base_watts(model: str, ups_assumptions: Dict[str, Any]) -> tuple[float, str]:
+    prefixes = (
+        ups_assumptions.get("model_prefixes")
+        if isinstance(ups_assumptions, dict) and isinstance(ups_assumptions.get("model_prefixes"), dict)
+        else {}
+    )
+    for prefix, watts in sorted(prefixes.items(), key=lambda item: len(str(item[0])), reverse=True):
+        if model.startswith(str(prefix)) and isinstance(watts, (int, float)):
+            return float(watts), f"model prefix {prefix}"
+
+    fallback = (
+        ups_assumptions.get("fallback_by_port_count")
+        if isinstance(ups_assumptions, dict) and isinstance(ups_assumptions.get("fallback_by_port_count"), dict)
+        else {}
+    )
+    for port_count in ("48", "24", "8"):
+        if re.search(rf"(?:^|[-_]){port_count}(?:[A-Z-]|$)", model):
+            value = fallback.get(port_count)
+            if isinstance(value, (int, float)):
+                return float(value), f"port-count fallback {port_count}"
+    value = fallback.get("default")
+    if isinstance(value, (int, float)):
+        return float(value), "default fallback"
+    return 75.0, "built-in default fallback"
+
+
+def _ups_runtime(product: Dict[str, Any], watts: float) -> float | None:
+    max_watts = product.get("max_watts") if isinstance(product, dict) else None
+    if isinstance(max_watts, (int, float)) and watts > float(max_watts):
+        return None
+    return _interpolate_runtime_minutes(product.get("runtime_points_minutes"), watts)
+
+
+def _smx_runtime_config(smx_ref: Dict[str, Any], config: Dict[str, Any], watts: float) -> float | None:
+    max_watts = smx_ref.get("max_watts") if isinstance(smx_ref, dict) else None
+    if isinstance(max_watts, (int, float)) and watts > float(max_watts):
+        return None
+    return _interpolate_runtime_minutes(config.get("runtime_points_minutes"), watts)
+
+
+def _smx_stack_cost(smx_ref: Dict[str, Any], external_count: int) -> float | None:
+    unit = smx_ref.get("unit_cost") if isinstance(smx_ref, dict) else None
+    ext = smx_ref.get("external_battery_unit_cost") if isinstance(smx_ref, dict) else None
+    if not isinstance(unit, (int, float)) or not isinstance(ext, (int, float)):
+        return None
+    return float(unit) + (external_count * float(ext))
+
+
+def _round_watts(value: float) -> float:
+    return math.ceil(float(value) * 10) / 10
+
+
+def _build_ups_power_plan(
+    org_name: str,
+    switch_devices: List[Dict[str, Any]],
+    poe_by_serial: Dict[str, Dict[str, Any]],
+    ups_payload: Dict[str, Any],
+    hardware_catalog: Dict[str, Any],
+    run_ts: datetime,
+) -> Dict[str, Any]:
+    ups_meta = ups_payload.get("meta") if isinstance(ups_payload, dict) else {}
+    ups_products = ups_payload.get("products") if isinstance(ups_payload, dict) else {}
+    ups_assumptions = (
+        ups_payload.get("switch_load_assumptions") if isinstance(ups_payload, dict) else {}
+    )
+    target_hours = (
+        float(ups_meta.get("target_runtime_hours"))
+        if isinstance(ups_meta, dict) and isinstance(ups_meta.get("target_runtime_hours"), (int, float))
+        else 10.0
+    )
+    target_minutes = target_hours * 60
+    bx_ref = ups_products.get("BX1500M") if isinstance(ups_products, dict) else {}
+    smx_ref = ups_products.get("SMX2200RMLV2U") if isinstance(ups_products, dict) else {}
+    runtime_configs = (
+        smx_ref.get("runtime_configurations")
+        if isinstance(smx_ref, dict) and isinstance(smx_ref.get("runtime_configurations"), list)
+        else []
+    )
+    base_config = next(
+        (
+            config for config in runtime_configs
+            if isinstance(config, dict) and int(config.get("external_battery_count") or 0) == 0
+        ),
+        {},
+    )
+
+    switches: List[Dict[str, Any]] = []
+    for sw in sorted(
+        switch_devices,
+        key=lambda d: (
+            str((d.get("network") or {}).get("name") or ""),
+            str(d.get("name") or d.get("model") or d.get("serial") or ""),
+        ),
+    ):
+        serial = str(sw.get("serial") or "")
+        model = str(sw.get("model") or "")
+        label = str(sw.get("name") or model or serial or "Unknown switch")
+        network = sw.get("network") if isinstance(sw.get("network"), dict) else {}
+        poe_data = poe_by_serial.get(serial, {}) if isinstance(poe_by_serial, dict) else {}
+        observed_poe = float(poe_data.get("avgWatts", 0) or 0)
+        chassis_watts, chassis_source = _estimated_switch_base_watts(model, ups_assumptions)
+        modeled_load = observed_poe + chassis_watts
+        buffer_watts = modeled_load * UPS_LOAD_BUFFER_RATIO
+        sizing_load = modeled_load + buffer_watts
+
+        bx_runtime = _ups_runtime(bx_ref, sizing_load) if isinstance(bx_ref, dict) else None
+        smx_base_runtime = (
+            _smx_runtime_config(smx_ref, base_config, sizing_load)
+            if isinstance(smx_ref, dict) and base_config
+            else None
+        )
+        target_config: Dict[str, Any] | None = None
+        target_runtime: float | None = None
+        for config in sorted(
+            [c for c in runtime_configs if isinstance(c, dict)],
+            key=lambda c: int(c.get("external_battery_count") or 0),
+        ):
+            runtime = _smx_runtime_config(smx_ref, config, sizing_load)
+            if runtime is not None and runtime >= target_minutes:
+                target_config = config
+                target_runtime = runtime
+                break
+        target_external_count = (
+            int(target_config.get("external_battery_count") or 0)
+            if target_config is not None
+            else None
+        )
+        target_label = (
+            str(target_config.get("label") or f"1 UPS + {target_external_count} external battery module(s)")
+            if target_config is not None
+            else "No listed stack reaches target"
+        )
+        target_cost = (
+            _smx_stack_cost(smx_ref, target_external_count)
+            if isinstance(target_external_count, int)
+            else None
+        )
+        switches.append(
+            {
+                "siteName": network.get("name") or "Unassigned",
+                "networkId": network.get("id") or sw.get("networkId"),
+                "switchName": label,
+                "serial": serial,
+                "model": model or "Unknown",
+                "status": sw.get("status") or "unknown",
+                "observedPoeAvgWatts": _round_watts(observed_poe),
+                "observedPoeSource": "poe_power_summary.json avgWatts" if poe_data else "not observed; treated as 0 W",
+                "chassisEstimateWatts": _round_watts(chassis_watts),
+                "chassisEstimateSource": chassis_source,
+                "knownPoeBudgetWatts": _catalog_poe_budget(hardware_catalog, model),
+                "baseModeledLoadWatts": _round_watts(modeled_load),
+                "bufferRatio": UPS_LOAD_BUFFER_RATIO,
+                "bufferWatts": _round_watts(buffer_watts),
+                "sizingLoadWatts": _round_watts(sizing_load),
+                "runtimeEstimates": {
+                    "BX1500M": {
+                        "runtimeMinutes": round(bx_runtime, 1) if bx_runtime is not None else None,
+                        "runtimeLabel": _format_runtime_minutes(bx_runtime),
+                    },
+                    "SMX2200RMLV2UBase": {
+                        "runtimeMinutes": round(smx_base_runtime, 1) if smx_base_runtime is not None else None,
+                        "runtimeLabel": _format_runtime_minutes(smx_base_runtime),
+                    },
+                    "SMX2200RMLV2UTargetStack": {
+                        "targetRuntimeHours": target_hours,
+                        "label": target_label,
+                        "externalBatteryCount": target_external_count,
+                        "runtimeMinutes": round(target_runtime, 1) if target_runtime is not None else None,
+                        "runtimeLabel": _format_runtime_minutes(target_runtime),
+                        "estimatedCost": round(target_cost, 2) if isinstance(target_cost, (int, float)) else None,
+                        "estimatedCostLabel": _format_money(target_cost),
+                    },
+                },
+            }
+        )
+
+    site_summary: Dict[str, Dict[str, Any]] = {}
+    for item in switches:
+        site = site_summary.setdefault(
+            item["siteName"],
+            {"switchCount": 0, "totalSizingLoadWatts": 0.0, "maxSizingLoadWatts": 0.0},
+        )
+        site["switchCount"] += 1
+        site["totalSizingLoadWatts"] += float(item["sizingLoadWatts"])
+        site["maxSizingLoadWatts"] = max(site["maxSizingLoadWatts"], float(item["sizingLoadWatts"]))
+    for site in site_summary.values():
+        site["totalSizingLoadWatts"] = _round_watts(site["totalSizingLoadWatts"])
+        site["maxSizingLoadWatts"] = _round_watts(site["maxSizingLoadWatts"])
+
+    sizing_loads = [float(item["sizingLoadWatts"]) for item in switches]
+    base_loads = [float(item["baseModeledLoadWatts"]) for item in switches]
+    return {
+        "schemaVersion": 1,
+        "orgName": org_name,
+        "generatedAt": run_ts.isoformat(),
+        "sourceFiles": [
+            "devices_availabilities.json",
+            "inventory_devices.json",
+            "devices_statuses.json",
+            "poe_power_summary.json",
+            "reporting/reference/ups_runtime_reference.json",
+            "reporting/reference/meraki_hardware_catalog.json",
+        ],
+        "planningAssumptions": {
+            "loadBufferRatio": UPS_LOAD_BUFFER_RATIO,
+            "loadBufferPercent": int(UPS_LOAD_BUFFER_RATIO * 100),
+            "modeledLoadFormula": "observed Meraki PoE average + switch chassis/base estimate",
+            "sizingLoadFormula": "modeled load * 1.10",
+            "targetRuntimeHours": target_hours,
+            "runtimeInterpolation": "log interpolation across maintained UPS runtime chart points",
+        },
+        "summary": {
+            "switchCount": len(switches),
+            "averageBaseModeledLoadWatts": _round_watts(sum(base_loads) / len(base_loads)) if base_loads else 0,
+            "averageSizingLoadWatts": _round_watts(sum(sizing_loads) / len(sizing_loads)) if sizing_loads else 0,
+            "maxSizingLoadWatts": _round_watts(max(sizing_loads)) if sizing_loads else 0,
+            "totalSizingLoadWatts": _round_watts(sum(sizing_loads)) if sizing_loads else 0,
+        },
+        "sites": dict(sorted(site_summary.items())),
+        "switches": switches,
+    }
+
+
+def _load_ups_power_plan_from_org(org_dir: str, org_name: str, run_ts: datetime) -> Dict[str, Any]:
+    devices_avail = load_json(os.path.join(org_dir, "devices_availabilities.json")) or []
+    inventory_devices = load_json(os.path.join(org_dir, "inventory_devices.json")) or []
+    devices_statuses_raw = load_json(os.path.join(org_dir, "devices_statuses.json")) or []
+    networks = load_json(os.path.join(org_dir, "networks.json")) or []
+    poe_summary = load_json(os.path.join(org_dir, "poe_power_summary.json")) or {}
+    hardware_catalog = _load_hardware_catalog(org_dir)
+    ups_payload = _load_ups_payload(org_dir)
+    network_names = {
+        n.get("id"): n.get("name", n.get("id", ""))
+        for n in networks
+        if isinstance(n, dict) and n.get("id")
+    }
+
+    metadata_by_serial: Dict[str, Dict[str, Any]] = {}
+    for source in (inventory_devices, devices_statuses_raw):
+        if not isinstance(source, list):
+            continue
+        for entry in source:
+            if not isinstance(entry, dict) or not entry.get("serial"):
+                continue
+            serial = entry["serial"]
+            merged = metadata_by_serial.setdefault(serial, {})
+            for key in ("name", "model", "sku", "mac", "productType", "networkId", "tags", "lanIp"):
+                if not merged.get(key) and entry.get(key):
+                    merged[key] = entry[key]
+
+    enriched: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for device in devices_avail if isinstance(devices_avail, list) else []:
+        if not isinstance(device, dict):
+            continue
+        serial = device.get("serial")
+        if serial:
+            seen.add(serial)
+        merged = dict(device)
+        for key, value in metadata_by_serial.get(serial, {}).items():
+            if not merged.get(key) and value:
+                merged[key] = value
+        net_id = merged.get("networkId") or (merged.get("network") or {}).get("id")
+        if net_id and not merged.get("network"):
+            merged["network"] = {"id": net_id, "name": network_names.get(net_id, net_id)}
+        elif net_id and isinstance(merged.get("network"), dict) and not merged["network"].get("name"):
+            merged["network"]["name"] = network_names.get(net_id, net_id)
+        enriched.append(merged)
+
+    for serial, meta in sorted(metadata_by_serial.items()):
+        if serial in seen:
+            continue
+        device = dict(meta)
+        device["serial"] = serial
+        device.setdefault("status", "unknown")
+        net_id = device.get("networkId")
+        if net_id and not device.get("network"):
+            device["network"] = {"id": net_id, "name": network_names.get(net_id, net_id)}
+        elif net_id and isinstance(device.get("network"), dict) and not device["network"].get("name"):
+            device["network"]["name"] = network_names.get(net_id, net_id)
+        enriched.append(device)
+
+    switch_devices = [
+        d for d in enriched
+        if isinstance(d, dict) and d.get("productType") == "switch"
+    ]
+    poe_switches = (
+        poe_summary.get("switch_poe_totals", [])
+        if isinstance(poe_summary, dict)
+        else []
+    )
+    poe_by_serial = {s.get("serial", ""): s for s in poe_switches if isinstance(s, dict)}
+    return _build_ups_power_plan(
+        org_name,
+        switch_devices,
+        poe_by_serial,
+        ups_payload,
+        hardware_catalog,
+        run_ts,
+    )
+
+
 def _read_org_name(org_dir: str) -> str:
     name_file = os.path.join(org_dir, "org_name.txt")
     if os.path.exists(name_file):
@@ -192,6 +507,16 @@ def _write_text_aliases(html: str, paths: tuple[str | None, ...]) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)
+
+
+def _write_json_aliases(payload: Dict[str, Any], paths: tuple[str | None, ...]) -> None:
+    for path in paths:
+        if not path:
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+            f.write("\n")
 
 
 def _copy_existing(src: str, destinations: tuple[str | None, ...]) -> None:
@@ -241,6 +566,19 @@ def generate_org_reports(
     log.info("Generating report for: %s", org_name)
     _slug = _report_slug(org_name)
     _stamp = _run_ts.strftime("%Y-%m-%d_%H%M")
+    ups_power_plan = _load_ups_power_plan_from_org(source_dir, org_name, _run_ts)
+    ups_plan_named_json = os.path.join(output_dir, _dated_report_name(org_name, "UPS_Switch_Power_Plan", _run_ts, "json"))
+    ups_plan_json = os.path.join(output_dir, "ups_switch_power_plan.json")
+    latest_ups_plan_named_json = (
+        os.path.join(latest_dir, _dated_report_name(org_name, "UPS_Switch_Power_Plan", _run_ts, "json"))
+        if latest_dir
+        else None
+    )
+    latest_ups_plan_json = os.path.join(latest_dir, "ups_switch_power_plan.json") if latest_dir else None
+    _write_json_aliases(
+        ups_power_plan,
+        (ups_plan_named_json, ups_plan_json, latest_ups_plan_named_json, latest_ups_plan_json),
+    )
 
     body = build_org_report(source_dir, org_name)
     html = build_html(f"{org_name} — Network Health Report", body)
@@ -536,6 +874,8 @@ def build_org_report(
                     "id": net_id,
                     "name": network_names.get(net_id, net_id),
                 }
+            elif net_id and isinstance(merged.get("network"), dict) and not merged["network"].get("name"):
+                merged["network"]["name"] = network_names.get(net_id, net_id)
             enriched.append(merged)
 
         # Keep inventory-only devices visible instead of silently dropping them.
@@ -551,6 +891,8 @@ def build_org_report(
                     "id": net_id,
                     "name": network_names.get(net_id, net_id),
                 }
+            elif net_id and isinstance(device.get("network"), dict) and not device["network"].get("name"):
+                device["network"]["name"] = network_names.get(net_id, net_id)
             enriched.append(device)
         return enriched
 
@@ -2874,134 +3216,47 @@ def build_org_report(
     # =========================================================
     # SECTION 6A: UPS RUNTIME PLANNING
     # =========================================================
+    ups_power_plan = _build_ups_power_plan(
+        org_name,
+        switch_devices,
+        poe_by_serial,
+        ups_payload,
+        hardware_catalog,
+        _now,
+    )
     ups_meta = ups_payload.get("meta") if isinstance(ups_payload, dict) else {}
     ups_products = ups_payload.get("products") if isinstance(ups_payload, dict) else {}
-    ups_assumptions = (
-        ups_payload.get("switch_load_assumptions") if isinstance(ups_payload, dict) else {}
-    )
-    ups_target_hours = (
-        float(ups_meta.get("target_runtime_hours"))
-        if isinstance(ups_meta, dict) and isinstance(ups_meta.get("target_runtime_hours"), (int, float))
-        else 10.0
-    )
-    ups_target_minutes = ups_target_hours * 60
     bx_ref = ups_products.get("BX1500M") if isinstance(ups_products, dict) else {}
     smx_ref = ups_products.get("SMX2200RMLV2U") if isinstance(ups_products, dict) else {}
 
-    def _estimated_switch_base_watts(model: str) -> float:
-        prefixes = (
-            ups_assumptions.get("model_prefixes")
-            if isinstance(ups_assumptions, dict) and isinstance(ups_assumptions.get("model_prefixes"), dict)
-            else {}
-        )
-        for prefix, watts in sorted(prefixes.items(), key=lambda item: len(str(item[0])), reverse=True):
-            if model.startswith(str(prefix)) and isinstance(watts, (int, float)):
-                return float(watts)
-
-        fallback = (
-            ups_assumptions.get("fallback_by_port_count")
-            if isinstance(ups_assumptions, dict) and isinstance(ups_assumptions.get("fallback_by_port_count"), dict)
-            else {}
-        )
-        for port_count in ("48", "24", "8"):
-            if re.search(rf"(?:^|[-_]){port_count}(?:[A-Z-]|$)", model):
-                value = fallback.get(port_count)
-                if isinstance(value, (int, float)):
-                    return float(value)
-        value = fallback.get("default")
-        return float(value) if isinstance(value, (int, float)) else 75.0
-
-    def _ups_runtime(product: Dict[str, Any], watts: float) -> float | None:
-        max_watts = product.get("max_watts") if isinstance(product, dict) else None
-        if isinstance(max_watts, (int, float)) and watts > float(max_watts):
-            return None
-        return _interpolate_runtime_minutes(product.get("runtime_points_minutes"), watts)
-
-    def _smx_runtime_config(config: Dict[str, Any], watts: float) -> float | None:
-        max_watts = smx_ref.get("max_watts") if isinstance(smx_ref, dict) else None
-        if isinstance(max_watts, (int, float)) and watts > float(max_watts):
-            return None
-        return _interpolate_runtime_minutes(config.get("runtime_points_minutes"), watts)
-
-    def _smx_stack_cost(external_count: int) -> float | None:
-        unit = smx_ref.get("unit_cost") if isinstance(smx_ref, dict) else None
-        ext = smx_ref.get("external_battery_unit_cost") if isinstance(smx_ref, dict) else None
-        if not isinstance(unit, (int, float)) or not isinstance(ext, (int, float)):
-            return None
-        return float(unit) + (external_count * float(ext))
-
     ups_rows: List[List[str]] = []
-    ups_loads: List[float] = []
-    runtime_configs = (
-        smx_ref.get("runtime_configurations")
-        if isinstance(smx_ref, dict) and isinstance(smx_ref.get("runtime_configurations"), list)
-        else []
-    )
-    for sw in sorted(
-        switch_devices,
-        key=lambda d: (
-            str((d.get("network") or {}).get("name") or ""),
-            str(d.get("name") or d.get("model") or d.get("serial") or ""),
-        ),
-    ):
-        serial = str(sw.get("serial") or "")
-        model = str(sw.get("model") or "")
-        label = str(sw.get("name") or model or serial or "Unknown switch")
-        poe_data = poe_by_serial.get(serial, {}) if isinstance(poe_by_serial, dict) else {}
-        observed_poe = float(poe_data.get("avgWatts", 0) or 0)
-        base_watts = _estimated_switch_base_watts(model)
-        modeled_load = observed_poe + base_watts
-        ups_loads.append(modeled_load)
-
-        bx_runtime = _ups_runtime(bx_ref, modeled_load) if isinstance(bx_ref, dict) else None
-        base_config = next(
-            (
-                config for config in runtime_configs
-                if isinstance(config, dict) and int(config.get("external_battery_count") or 0) == 0
-            ),
-            {},
-        )
-        smx_base_runtime = _smx_runtime_config(base_config, modeled_load) if base_config else None
-        target_config: Dict[str, Any] | None = None
-        target_runtime: float | None = None
-        for config in sorted(
-            [c for c in runtime_configs if isinstance(c, dict)],
-            key=lambda c: int(c.get("external_battery_count") or 0),
-        ):
-            runtime = _smx_runtime_config(config, modeled_load)
-            if runtime is not None and runtime >= ups_target_minutes:
-                target_config = config
-                target_runtime = runtime
-                break
-        target_external_count = (
-            int(target_config.get("external_battery_count") or 0)
-            if target_config is not None
-            else 0
-        )
-        target_label = (
-            str(target_config.get("label") or f"1 UPS + {target_external_count} external battery module(s)")
-            if target_config is not None
-            else "No listed stack reaches target"
-        )
-        if target_config is not None and target_runtime is not None:
-            target_label = f"{target_label} ({_format_runtime_minutes(target_runtime)})"
-
+    for item in ups_power_plan.get("switches", []):
+        target_stack = (item.get("runtimeEstimates") or {}).get("SMX2200RMLV2UTargetStack") or {}
+        target_label = str(target_stack.get("label") or "No listed stack reaches target")
+        if target_stack.get("runtimeLabel"):
+            target_label = f"{target_label} ({target_stack.get('runtimeLabel')})"
         ups_rows.append(
             [
-                f"{label} ({serial})" if serial and label != serial else label,
-                model or "Unknown",
-                f"{observed_poe:.1f} W",
-                f"{base_watts:.1f} W",
-                f"{modeled_load:.1f} W",
-                _format_runtime_minutes(bx_runtime),
-                _format_runtime_minutes(smx_base_runtime),
+                f"{item.get('switchName')} ({item.get('serial')})"
+                if item.get("serial") and item.get("switchName") != item.get("serial")
+                else str(item.get("switchName") or item.get("serial") or "Unknown"),
+                str(item.get("model") or "Unknown"),
+                f"{float(item.get('observedPoeAvgWatts') or 0):.1f} W",
+                f"{float(item.get('chassisEstimateWatts') or 0):.1f} W",
+                f"{float(item.get('baseModeledLoadWatts') or 0):.1f} W",
+                f"{float(item.get('sizingLoadWatts') or 0):.1f} W",
+                ((item.get("runtimeEstimates") or {}).get("BX1500M") or {}).get("runtimeLabel", "Over UPS rating"),
+                ((item.get("runtimeEstimates") or {}).get("SMX2200RMLV2UBase") or {}).get("runtimeLabel", "Over UPS rating"),
                 target_label,
-                _format_money(_smx_stack_cost(target_external_count) if target_config is not None else None),
+                target_stack.get("estimatedCostLabel", "Pricing needed"),
             ]
         )
 
-    avg_ups_load = sum(ups_loads) / len(ups_loads) if ups_loads else 0
-    max_ups_load = max(ups_loads) if ups_loads else 0
+    ups_summary = ups_power_plan.get("summary") or {}
+    ups_assumptions_summary = ups_power_plan.get("planningAssumptions") or {}
+    ups_target_hours = float(ups_assumptions_summary.get("targetRuntimeHours") or 10)
+    avg_ups_load = float(ups_summary.get("averageSizingLoadWatts") or 0)
+    max_ups_load = float(ups_summary.get("maxSizingLoadWatts") or 0)
     bx_max = bx_ref.get("max_watts") if isinstance(bx_ref, dict) else None
     smx_max = smx_ref.get("max_watts") if isinstance(smx_ref, dict) else None
     smx_unit = smx_ref.get("unit_cost") if isinstance(smx_ref, dict) else None
@@ -3028,12 +3283,12 @@ def build_org_report(
           <div class="kpi-note">One UPS stack per listed switch load</div>
         </div>
         <div class="kpi">
-          <div class="kpi-label">Average Modeled Load</div>
+          <div class="kpi-label">Average Sizing Load</div>
           <div class="kpi-value">{avg_ups_load:.1f} W</div>
-          <div class="kpi-note">Observed PoE + chassis estimate</div>
+          <div class="kpi-note">Modeled load + 10% buffer</div>
         </div>
         <div class="kpi">
-          <div class="kpi-label">Largest Modeled Load</div>
+          <div class="kpi-label">Largest Sizing Load</div>
           <div class="kpi-value">{max_ups_load:.1f} W</div>
           <div class="kpi-note">Used for closet-level sizing checks</div>
         </div>
@@ -3046,7 +3301,8 @@ def build_org_report(
       <div class="summary-card">
         <div class="summary-title">Sizing Method</div>
         <div class="summary-body">
-          The estimate models each switch as Meraki-observed average PoE draw plus a conservative chassis/base load by switch family. BX1500M is treated as a small single-switch option
+          The estimate models each switch as Meraki-observed average PoE draw plus a conservative chassis/base load by switch family, then applies a <strong>10% planning buffer</strong> before sizing UPS runtime.
+          The same data is saved beside the report as <code>ups_switch_power_plan.json</code> for future planning and review. BX1500M is treated as a small single-switch option
           {f"rated to {float(bx_max):g} W" if isinstance(bx_max, (int, float)) else ""}; SMX2200RMLV2U is treated as the rack/tower option
           {f"rated to {float(smx_max):g} W" if isinstance(smx_max, (int, float)) else ""} with {smx_ref.get("external_battery_sku", "external battery modules") if isinstance(smx_ref, dict) else "external battery modules"} for extended runtime.
           Runtime varies with battery age, temperature, load mix, and calibration, so these are planning estimates rather than procurement guarantees.
@@ -3063,6 +3319,7 @@ def build_org_report(
                 "Observed PoE Avg",
                 "Chassis Est.",
                 "Modeled Load",
+                "Sizing Load (+10%)",
                 "BX1500M ETA",
                 "SMX Base ETA",
                 f"SMX Stack for {ups_target_hours:g}h",

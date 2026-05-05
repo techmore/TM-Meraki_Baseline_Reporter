@@ -275,6 +275,8 @@ class TestReportingEntrypoint:
         ]) == 0
         assert (output / "Demo_Org_Complete_Report_2026-05-02.pdf").exists()
         assert (output / "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf").exists()
+        assert (output / "Demo_Org_UPS_Switch_Power_Plan_Report_2026-05-02.json").exists()
+        assert (output / "ups_switch_power_plan.json").exists()
         assert (output / "Demo_Org_2026-05-02_2130_report.pdf").exists()
         assert (output / "report.pdf").exists()
         assert (output / "report_ap_spectrum.pdf").exists()
@@ -306,8 +308,12 @@ class TestReportingEntrypoint:
         latest_dir = reports / "latest" / "Demo_Org"
         assert (run_dir / "Demo_Org_Complete_Report_2026-05-02.pdf").exists()
         assert (run_dir / "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf").exists()
+        assert (run_dir / "Demo_Org_UPS_Switch_Power_Plan_Report_2026-05-02.json").exists()
+        assert (run_dir / "ups_switch_power_plan.json").exists()
         assert (latest_dir / "Demo_Org_Complete_Report_2026-05-02.pdf").exists()
         assert (latest_dir / "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf").exists()
+        assert (latest_dir / "Demo_Org_UPS_Switch_Power_Plan_Report_2026-05-02.json").exists()
+        assert (latest_dir / "ups_switch_power_plan.json").exists()
         assert (latest_dir / "report.pdf").exists()
         assert (latest_dir / "report_ap_spectrum.pdf").exists()
         assert not (run_dir / "report.pdf").exists()

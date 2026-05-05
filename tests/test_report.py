@@ -244,8 +244,49 @@ class TestBuildOrgReport:
         assert "SMX2200RMLV2U" in html
         assert "Core-SW-1 (Q2SW-TEST-0001)" in html
         assert "97.5 W" in html
+        assert "107.3 W" in html
+        assert "10% planning buffer" in html
+        assert "ups_switch_power_plan.json" in html
         assert "1 UPS + 1 external battery module" in html
         assert "$3,487.04" in html
+
+    def test_ups_power_plan_json_payload_includes_buffered_switch_load(self, tmp_path):
+        from reporting.app import _load_ups_power_plan_from_org
+
+        for fn in os.listdir(FIXTURES):
+            src = os.path.join(FIXTURES, fn)
+            dst = tmp_path / fn
+            if os.path.isfile(src):
+                shutil.copy(src, dst)
+
+        (tmp_path / "poe_power_summary.json").write_text(
+            json.dumps(
+                {
+                    "switch_poe_totals": [
+                        {
+                            "serial": "Q2SW-TEST-0001",
+                            "avgWatts": 42.5,
+                            "powerUsageInWh": 1020,
+                        }
+                    ],
+                    "port_poe_totals": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        payload = _load_ups_power_plan_from_org(
+            str(tmp_path),
+            "UPS Json Test",
+            datetime.fromisoformat("2026-05-05T12:00:00"),
+        )
+        core = next(item for item in payload["switches"] if item["serial"] == "Q2SW-TEST-0001")
+        assert payload["planningAssumptions"]["loadBufferPercent"] == 10
+        assert core["switchName"] == "Core-SW-1"
+        assert core["baseModeledLoadWatts"] == 97.5
+        assert core["bufferWatts"] == 9.8
+        assert core["sizingLoadWatts"] == 107.3
+        assert core["runtimeEstimates"]["SMX2200RMLV2UTargetStack"]["externalBatteryCount"] == 1
 
     def test_expanded_hardware_catalog_renders_catalyst_poe_budget(self, tmp_path):
         from reporting.app import build_org_report
