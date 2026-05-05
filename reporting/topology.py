@@ -281,25 +281,38 @@ def _topo_pages(
     sw_serials = {s for s, d in s2d.items() if d.get("productType") == "switch"}
     tier2 = [s for s in sw_serials if parent_of.get(s) not in sw_serials]
 
-    pages: List[Dict[str, str]] = []
-
-    # Overview: MX + all tier-2 switches only
-    overview_devs = [d for d in devices
-                     if d.get("productType") == "appliance"
-                     or d["serial"] in tier2]
-    pages.append({"title": "Overview — Core / Distribution Layer",
-                  "svg": _topo_svg(
-                      overview_devs, lldp_cdp, ap_util, port_issues,
-                      switch_port_statuses_by_switch, enrichment=enrichment,
-                  )})
-
-    # Per-branch detail: tier-2 switch + its full subtree + parent MX stub
     type_order = {"appliance": 0, "switch": 1, "wireless": 2, "camera": 3, "sensor": 4}
     tier2_sorted = sorted(tier2, key=lambda s: (
         type_order.get(s2d[s].get("productType", ""), 9),
         s2d[s].get("name") or s,
     ))
 
+    pages: List[Dict[str, str]] = []
+
+    # Overview: MX + readable chunks of tier-2 switches only. WPC-style
+    # campuses can have enough distribution switches that a single row becomes
+    # illegible after PDF scaling.
+    overview_chunk_size = 6
+    overview_chunks = [
+        tier2_sorted[i:i + overview_chunk_size]
+        for i in range(0, len(tier2_sorted), overview_chunk_size)
+    ] or [[]]
+    for idx, chunk in enumerate(overview_chunks, start=1):
+        overview_devs = [
+            d for d in devices
+            if d.get("productType") == "appliance" or d.get("serial") in chunk
+        ]
+        suffix = f" ({idx}/{len(overview_chunks)})" if len(overview_chunks) > 1 else ""
+        pages.append({
+            "title": f"Overview — Core / Distribution Layer{suffix}",
+            "svg": _topo_svg(
+                overview_devs, lldp_cdp, ap_util, port_issues,
+                switch_port_statuses_by_switch, enrichment=enrichment,
+                infer_root_parent=True,
+            ),
+        })
+
+    # Per-branch detail: tier-2 switch + its full subtree.
     for t2 in tier2_sorted:
         subtree: set = set()
         q: deque = deque([t2])
@@ -333,6 +346,7 @@ def _topo_svg(
     switch_port_statuses_by_switch: Dict[str, Any],
     enrichment: Optional[Dict] = None,
     show_internet: bool = True,
+    infer_root_parent: bool = False,
 ) -> str:
     """Return an inline SVG topology using parent/child relationships from ports."""
     if not devices:
@@ -483,6 +497,26 @@ def _topo_svg(
         parent_link_of[child] = link
         children.setdefault(parent, []).append(child)
 
+    appliances = [
+        serial for serial, dev in serial_to_dev.items()
+        if dev.get("productType") == "appliance"
+    ]
+    if infer_root_parent and len(appliances) == 1:
+        appliance = appliances[0]
+        for serial, dev in serial_to_dev.items():
+            if serial == appliance or dev.get("productType") != "switch" or serial in parent_of:
+                continue
+            parent_of[serial] = appliance
+            parent_link_of[serial] = {
+                "local": serial,
+                "remote": appliance,
+                "local_port": "",
+                "remote_port": "",
+                "local_speed": "",
+                "confirmed": False,
+            }
+            children.setdefault(appliance, []).append(serial)
+
     roots = [
         serial for serial, dev in serial_to_dev.items()
         if dev.get("productType") == "appliance" and serial not in parent_of
@@ -524,11 +558,23 @@ def _topo_svg(
         if serial not in display_serials:
             continue
         by_depth.setdefault(value, []).append(serial)
-    for serials in by_depth.values():
-        serials.sort(key=lambda serial: (
-            type_order.get(serial_to_dev[serial].get("productType", ""), 9),
-            serial_to_dev[serial].get("name") or serial,
-        ))
+    previous_positions: Dict[str, int] = {}
+    for value in sorted(by_depth):
+        serials = by_depth[value]
+        if previous_positions:
+            serials.sort(
+                key=lambda serial: (
+                    previous_positions.get(parent_of.get(serial, ""), 9999),
+                    type_order.get(serial_to_dev[serial].get("productType", ""), 9),
+                    serial_to_dev[serial].get("name") or serial,
+                )
+            )
+        else:
+            serials.sort(key=lambda serial: (
+                type_order.get(serial_to_dev[serial].get("productType", ""), 9),
+                serial_to_dev[serial].get("name") or serial,
+            ))
+        previous_positions = {serial: idx for idx, serial in enumerate(serials)}
 
     layers: List[List[str]] = ([["__internet__"]] if show_internet else [])
     for value in sorted(by_depth):
@@ -592,9 +638,11 @@ def _topo_svg(
         speed = _svg_esc(link.get("local_speed") or "")
         local_port = _svg_esc(link.get("local_port") or "")
         remote_port = _svg_esc(link.get("remote_port") or "")
+        dash = "" if link.get("confirmed", True) else ' stroke-dasharray="5 4"'
+        opacity = "0.95" if link.get("confirmed", True) else "0.65"
         parts.append(
             f'<line x1="{px + node_w/2:.1f}" y1="{p_bot:.1f}" x2="{cx + node_w/2:.1f}" y2="{cy:.1f}" '
-            f'stroke="#8a9269" stroke-width="1.8" opacity="0.95"/>'
+            f'stroke="#8a9269" stroke-width="1.8" opacity="{opacity}"{dash}/>'
         )
         if speed or local_port or remote_port:
             mid_y = (p_bot + cy) / 2
@@ -882,4 +930,3 @@ def _build_topology_facts(
                 edge_counts[local_serial] = edge_counts.get(local_serial, 0) + 1
 
     return serial_to_dev, status_by_switch, parent_of, children_of, edge_counts
-

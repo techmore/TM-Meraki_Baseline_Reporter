@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 
 from .common import REPORT_VERSION
 
@@ -33,8 +34,55 @@ def build_html(doc_title: str, body: str) -> str:
       margin: 0;
     }}
     @page {{
-      margin: 18mm 12mm;
+      margin: 22mm 12mm 20mm;
       background: var(--olive-100);
+      @top-left {{
+        content: "TM Meraki Baseline";
+        color: #575d3d;
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }}
+      @top-right {{
+        content: "Release {REPORT_VERSION}";
+        color: #78716c;
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+        font-size: 8px;
+      }}
+      @bottom-center {{
+        content: "Page " counter(page) " of " counter(pages);
+        color: #78716c;
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+        font-size: 8px;
+      }}
+    }}
+    @page switch-detail {{
+      size: A4 landscape;
+      margin: 10mm 8mm 8mm;
+      background: var(--olive-100);
+      @top-left {{
+        content: "TM Meraki Baseline";
+        color: #575d3d;
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }}
+      @top-right {{
+        content: "Release {REPORT_VERSION}";
+        color: #78716c;
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+        font-size: 8px;
+      }}
+      @bottom-center {{
+        content: "Page " counter(page) " of " counter(pages);
+        color: #78716c;
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+        font-size: 8px;
+      }}
     }}
     :root {{
       --bg: #eef0e6;
@@ -207,18 +255,18 @@ def build_html(doc_title: str, body: str) -> str:
     .toc-page {{
       page-break-after: always;
       min-height: 241mm;
-      padding: 60px 72px;
+      padding: 44px 64px;
       display: flex;
       flex-direction: column;
     }}
     .toc-header {{
       font-family: "Playfair Display", Georgia, "Times New Roman", serif;
-      font-size: 30px;
+      font-size: 28px;
       font-weight: 700;
       color: var(--olive-900);
       border-bottom: 2px solid var(--olive-400);
-      padding-bottom: 16px;
-      margin-bottom: 40px;
+      padding-bottom: 12px;
+      margin-bottom: 24px;
     }}
     .toc-list {{
       list-style: none;
@@ -227,22 +275,31 @@ def build_html(doc_title: str, body: str) -> str:
       counter-reset: none;
     }}
     .toc-list > li {{
-      display: flex;
-      align-items: baseline;
-      gap: 14px;
-      padding: 11px 0;
+      display: block;
+      padding: 6px 0;
       border-bottom: 1px solid var(--line);
-      font-size: 13px;
+      font-size: 12px;
     }}
     .toc-list > li::before {{
       display: none;
     }}
+    .toc-link {{
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      color: inherit;
+      text-decoration: none;
+    }}
+    .toc-link:hover .toc-entry {{
+      color: var(--accent);
+      text-decoration: underline;
+    }}
     .toc-num {{
       font-family: "Playfair Display", Georgia, "Times New Roman", serif;
-      font-size: 17px;
+      font-size: 14px;
       font-weight: 700;
       color: var(--olive-400);
-      min-width: 28px;
+      min-width: 24px;
     }}
     .toc-entry {{
       color: var(--ink);
@@ -250,13 +307,13 @@ def build_html(doc_title: str, body: str) -> str:
     }}
     .toc-sub {{
       list-style: none;
-      margin: 8px 0 0 48px;
+      margin: 4px 0 0 34px;
       padding: 0;
     }}
     .toc-sub-item {{
-      font-size: 13px;
+      font-size: 11px;
       color: var(--muted);
-      padding: 4px 0;
+      padding: 2px 0;
       border: none;
     }}
     .toc-sub-item a {{
@@ -398,107 +455,118 @@ def build_html(doc_title: str, body: str) -> str:
       }}
     }}
     .switch-detail-page {{
+      page: switch-detail;
       page-break-before: always;
       max-width: none;
+      margin-left: 0;
+      margin-right: 0;
+    }}
+    .switch-detail-page h3 {{
+      margin: 0 0 2px;
+      font-size: 15px;
+      line-height: 1.1;
     }}
     .switch-detail-kicker {{
-      margin-top: -8px;
+      margin: 0 0 6px;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 8px;
+      line-height: 1.15;
     }}
     .switch-detail-stats {{
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-      margin: 18px 0;
+      grid-template-columns: repeat(9, minmax(0, 1fr));
+      gap: 3px;
+      margin: 5px 0;
     }}
     .switch-detail-stat {{
       border: 1px solid var(--line);
       background: var(--stone-50);
-      border-radius: 10px;
-      padding: 12px 14px;
+      border-radius: 4px;
+      padding: 3px 4px;
     }}
     .switch-detail-stat .label {{
       display: block;
-      font-size: 9px;
+      font-size: 5.5px;
       text-transform: uppercase;
-      letter-spacing: 0.16em;
+      letter-spacing: 0;
       color: var(--muted);
-      margin-bottom: 6px;
+      margin-bottom: 1px;
       font-weight: 600;
     }}
     .switch-detail-stat .value {{
       display: block;
-      font-size: 12px;
+      font-size: 6.5px;
       color: var(--ink);
-      line-height: 1.45;
+      line-height: 1.05;
       word-break: break-word;
     }}
     .switch-detail-card {{
       border: 1px solid var(--line);
       background: white;
-      border-radius: 12px;
-      padding: 16px 18px;
-      margin: 16px 0 18px;
+      border-radius: 4px;
+      padding: 5px 6px;
+      margin: 5px 0 6px;
     }}
     .switch-detail-narrative {{
-      margin-bottom: 10px;
+      margin-bottom: 3px;
       color: var(--ink);
+      font-size: 7px;
+      line-height: 1.12;
     }}
     .switch-port-summary {{
       display: flex;
       flex-wrap: wrap;
-      gap: 14px;
-      font-size: 11px;
+      gap: 5px;
+      font-size: 6.5px;
       color: var(--muted);
-      margin: 2px 0 12px;
+      margin: 1px 0 4px;
     }}
     .switch-port-group {{
-      margin-top: 12px;
+      margin-top: 4px;
     }}
     .switch-port-group-title {{
-      font-size: 10px;
-      letter-spacing: 0.14em;
+      font-size: 6px;
+      letter-spacing: 0;
       text-transform: uppercase;
       color: var(--muted);
-      margin-bottom: 7px;
+      margin-bottom: 2px;
       font-weight: 700;
     }}
     .switch-port-group-kind {{
-      margin-left: 8px;
-      letter-spacing: 0.08em;
+      margin-left: 3px;
+      letter-spacing: 0;
       font-weight: 600;
       opacity: 0.7;
     }}
     .switch-port-face {{
       border: 1px solid var(--line);
-      border-radius: 10px;
+      border-radius: 4px;
       background: #f8fafc;
-      padding: 10px;
+      padding: 3px;
     }}
     .switch-port-row {{
       display: grid;
       grid-auto-flow: column;
       grid-auto-columns: minmax(0, 1fr);
-      gap: 6px;
-      margin-top: 6px;
+      gap: 2px;
+      margin-top: 2px;
     }}
     .switch-port-row:first-child {{
       margin-top: 0;
     }}
     .switch-port-cell {{
-      border-radius: 6px;
-      min-height: 40px;
+      border-radius: 3px;
+      min-height: 19px;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-direction: column;
-      gap: 2px;
-      font-size: 10px;
+      gap: 1px;
+      font-size: 6px;
       font-weight: 700;
       border: 1px solid transparent;
       color: #1f2937;
-      padding: 4px 2px;
+      padding: 1px;
       text-align: center;
     }}
     .switch-port-num {{
@@ -507,7 +575,7 @@ def build_html(doc_title: str, body: str) -> str:
     }}
     .switch-port-meta {{
       display: block;
-      font-size: 8px;
+      font-size: 4.8px;
       font-weight: 600;
       opacity: 0.78;
       line-height: 1.05;
@@ -530,25 +598,25 @@ def build_html(doc_title: str, body: str) -> str:
     }}
     .switch-detail-grid-empty {{
       color: var(--muted);
-      font-size: 12px;
-      padding: 8px 0 2px;
+      font-size: 7px;
+      padding: 3px 0 1px;
     }}
     .switch-detail-legend {{
       display: flex;
       flex-wrap: wrap;
-      gap: 12px;
-      margin-top: 12px;
-      font-size: 11px;
+      gap: 5px;
+      margin-top: 4px;
+      font-size: 6px;
       color: var(--muted);
     }}
     .switch-detail-legend span {{
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 2px;
     }}
     .switch-detail-legend .swatch {{
-      width: 10px;
-      height: 10px;
+      width: 6px;
+      height: 6px;
       border-radius: 2px;
       display: inline-block;
       border: 1px solid rgba(15, 23, 42, 0.08);
@@ -562,8 +630,78 @@ def build_html(doc_title: str, body: str) -> str:
     .switch-detail-legend .swatch.speed-mgig {{ background: #dbeafe; box-shadow: inset 0 0 0 2px rgba(14, 165, 233, 0.22); }}
     .switch-detail-legend .swatch.speed-uplink {{ background: #fed7aa; box-shadow: inset 0 0 0 2px rgba(234, 88, 12, 0.24); }}
     .switch-detail-legend .swatch.sfp {{ background: white; border-style: dashed; border-width: 2px; }}
-    .switch-detail-table td {{
+    table.data.switch-detail-table td {{
       vertical-align: top;
+    }}
+    table.data.switch-detail-table {{
+      table-layout: fixed;
+      width: 100%;
+      font-size: 4.2px;
+      line-height: 0.95;
+      margin-top: 2px;
+      border-radius: 2px;
+    }}
+    table.data.switch-detail-table th,
+    table.data.switch-detail-table td {{
+      padding: 0.2px 0.6px;
+      font-size: 4.2px;
+      word-break: keep-all;
+      overflow-wrap: normal;
+      hyphens: none;
+      white-space: nowrap;
+    }}
+    table.data.switch-detail-table th {{
+      font-size: 4px;
+      letter-spacing: 0;
+      text-transform: none;
+    }}
+    table.data.switch-detail-table td:nth-child(2),
+    table.data.switch-detail-table td:nth-child(8),
+    table.data.switch-detail-table td:nth-child(13) {{
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }}
+    table.data.switch-detail-table .badge {{
+      font-size: 3.9px;
+      padding: 0 1px;
+      border-radius: 1px;
+      line-height: 1;
+    }}
+    .switch-detail-table .c-port {{ width: 3.2%; }}
+    .switch-detail-table .c-label {{ width: 10%; }}
+    .switch-detail-table .c-heat {{ width: 4.2%; }}
+    .switch-detail-table .c-role {{ width: 4%; }}
+    .switch-detail-table .c-status {{ width: 5%; }}
+    .switch-detail-table .c-speed {{ width: 4.6%; }}
+    .switch-detail-table .c-duplex {{ width: 3.7%; }}
+    .switch-detail-table .c-vlan {{ width: 14%; }}
+    .switch-detail-table .c-total {{ width: 6.5%; }}
+    .switch-detail-table .c-rate {{ width: 6%; }}
+    .switch-detail-table .c-power {{ width: 6%; }}
+    .switch-detail-table .c-flags {{ width: 5%; }}
+    .switch-detail-table .c-neighbor {{ width: 28%; }}
+    .row-eos-critical td {{
+      background: #fee2e2;
+    }}
+    .row-eos-announced td {{
+      background: #fef3c7;
+    }}
+    .end-report {{
+      min-height: 210mm;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      color: var(--olive-900);
+    }}
+    .end-report h2 {{
+      font-family: "Playfair Display", Georgia, "Times New Roman", serif;
+      font-size: 34px;
+      margin: 0 0 10px;
+    }}
+    .end-report p {{
+      color: var(--muted);
+      margin: 4px 0;
     }}
     .wan-capacity-chart {{
       margin: 16px 0 22px;
@@ -699,6 +837,9 @@ def build_html(doc_title: str, body: str) -> str:
       gap: 10px;
       margin: 16px 0 24px;
     }}
+    .report-guide-grid {{
+      grid-template-columns: repeat(4, 1fr);
+    }}
     .kpi {{
       border: 1px solid var(--line);
       background: var(--stone-50);
@@ -731,6 +872,18 @@ def build_html(doc_title: str, body: str) -> str:
       font-weight: 700;
       color: var(--ink);
       display: block;
+    }}
+    .kpi-note {{
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 8px;
+      line-height: 1.25;
+      word-break: break-word;
+    }}
+    .kpi-note a {{
+      color: var(--olive-700);
+      text-decoration: none;
+      font-weight: 600;
     }}
 
     /* =====================================================
@@ -1147,15 +1300,41 @@ def build_html(doc_title: str, body: str) -> str:
 
 
 def write_pdf(html_path: str, pdf_path: str) -> bool:
-    # Try weasyprint first
+    # Run WeasyPrint out-of-process. Native font/Pango/Cairo crashes can
+    # otherwise terminate the whole report generator before fallback handling.
     try:
-        import weasyprint  # type: ignore
+        import weasyprint  # type: ignore  # noqa: F401
 
         log.info("Using WeasyPrint for PDF generation: %s", pdf_path)
-        weasyprint.HTML(filename=html_path).write_pdf(pdf_path)
-        return True
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys, weasyprint; "
+                    "weasyprint.HTML(filename=sys.argv[1]).write_pdf(sys.argv[2])"
+                ),
+                html_path,
+                pdf_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=240,
+        )
+        if result.returncode == 0 and os.path.exists(pdf_path):
+            return True
+        detail = (result.stderr or result.stdout or "").strip()
+        if result.returncode < 0:
+            log.warning("WeasyPrint crashed with signal %s while rendering %s", -result.returncode, html_path)
+        else:
+            log.warning("WeasyPrint exited %d while rendering %s", result.returncode, html_path)
+        if detail:
+            log.warning("WeasyPrint output: %s", detail[:1000])
+    except subprocess.TimeoutExpired:
+        log.warning("WeasyPrint timed out while rendering %s", html_path)
     except Exception as e:
         log.warning("WeasyPrint failed: %s", e)
+
     # Fallback to wkhtmltopdf
     wk = shutil.which("wkhtmltopdf")
     if wk:

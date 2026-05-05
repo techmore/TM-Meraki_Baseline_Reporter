@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import logging
+import math
 import os
 import re
 import shutil
@@ -10,8 +11,10 @@ from typing import Any, Dict, List
 from .common import (
     BACKUPS_DIR,
     REPORT_VERSION,
+    _format_usage_kb,
     _he,
     _hardware_consistency_note,
+    _is_sfp_like_port,
     _model_capability_summary,
     build_fallback_security_checks,
     check_backup_schema,
@@ -25,15 +28,31 @@ from .common import (
 from .topology import _topo_pages, _topo_summary_rows, _topo_svg
 from .sections import (
     _build_ap_interference_section,
+    _build_addressing_dhcp_section,
+    _build_appliance_policy_section,
     _build_budget_forecast_section,
     _build_config_coverage_section,
     _build_switch_detail_section,
     _build_wan_capacity_section,
+    _is_low_speed_link,
+    _model_cell,
 )
 from .html_shell import build_html, write_pdf
 
 log = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FIXED_NOW_ENV = "MERAKI_REPORT_FIXED_NOW"
+REPORTS_DIR = os.path.join(BASE_DIR, "reports")
+HARDWARE_CATALOG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "reference",
+    "meraki_hardware_catalog.json",
+)
+PRICING_REFERENCE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "reference",
+    "pricing_reference.json",
+)
 
 
 def _report_slug(name: str) -> str:
@@ -44,6 +63,41 @@ def _report_slug(name: str) -> str:
 def _dated_report_name(org_name: str, label: str, run_ts: datetime, ext: str) -> str:
     date_stamp = run_ts.strftime("%Y-%m-%d")
     return f"{_report_slug(org_name)}_{label}_Report_{date_stamp}.{ext}"
+
+
+def _current_run_ts() -> datetime:
+    fixed_now = os.getenv(FIXED_NOW_ENV)
+    if fixed_now:
+        try:
+            return datetime.fromisoformat(fixed_now.replace("Z", "+00:00"))
+        except ValueError:
+            log.warning("Ignoring invalid %s value: %s", FIXED_NOW_ENV, fixed_now)
+    return datetime.now()
+
+
+def _validate_fixed_now(value: str) -> str:
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be an ISO timestamp, e.g. 2026-05-02T21:30:00")
+    return value
+
+
+def _load_hardware_catalog(org_dir: str) -> Dict[str, Any]:
+    return (
+        load_json(os.path.join(org_dir, "meraki_hardware_catalog.json"))
+        or load_json(HARDWARE_CATALOG_PATH)
+        or {}
+    )
+
+
+def _load_pricing_payload(org_dir: str) -> Dict[str, Any]:
+    return (
+        load_json(os.path.join(org_dir, "pricing.json"))
+        or load_json(os.path.join(BASE_DIR, "pricing.json"))
+        or load_json(PRICING_REFERENCE_PATH)
+        or {}
+    )
 
 
 def _read_org_name(org_dir: str) -> str:
@@ -63,18 +117,60 @@ def _read_org_name(org_dir: str) -> str:
     return org_name
 
 
-def _write_text_aliases(html: str, paths: tuple[str, ...]) -> None:
+def _write_text_aliases(html: str, paths: tuple[str | None, ...]) -> None:
     for path in paths:
+        if not path:
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)
 
 
-def generate_org_reports(source_dir: str, org_name: str, output_dir: str | None = None) -> int:
+def _copy_existing(src: str, destinations: tuple[str | None, ...]) -> None:
+    for dst in destinations:
+        if not dst or os.path.abspath(src) == os.path.abspath(dst):
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+
+
+def _cleanup_paths(paths: tuple[str, ...]) -> None:
+    for path in paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            log.warning("Unable to remove generated HTML artifact: %s", path)
+
+
+def _report_run_output_dir(reports_dir: str, org_name: str, run_ts: datetime) -> str:
+    return os.path.join(
+        reports_dir,
+        _report_slug(org_name),
+        run_ts.strftime("%Y-%m-%d_%H%M"),
+    )
+
+
+def _report_latest_output_dir(reports_dir: str, org_name: str) -> str:
+    return os.path.join(reports_dir, "latest", _report_slug(org_name))
+
+
+def generate_org_reports(
+    source_dir: str,
+    org_name: str,
+    output_dir: str | None = None,
+    *,
+    latest_dir: str | None = None,
+    keep_html: bool = True,
+    run_ts: datetime | None = None,
+) -> int:
+    _run_ts = run_ts or _current_run_ts()
     output_dir = output_dir or source_dir
     os.makedirs(output_dir, exist_ok=True)
+    if latest_dir:
+        os.makedirs(latest_dir, exist_ok=True)
 
     log.info("Generating report for: %s", org_name)
-    _run_ts = datetime.now()
     _slug = _report_slug(org_name)
     _stamp = _run_ts.strftime("%Y-%m-%d_%H%M")
 
@@ -86,14 +182,32 @@ def generate_org_reports(source_dir: str, org_name: str, output_dir: str | None 
     named_pdf_alias = os.path.join(output_dir, _dated_report_name(org_name, "Complete", _run_ts, "pdf"))
     html_alias = os.path.join(output_dir, "report.html")
     pdf_alias = os.path.join(output_dir, "report.pdf")
+    if latest_dir:
+        html_path = named_html_alias
+        pdf_path = named_pdf_alias
+        html_alias = None
+        pdf_alias = None
+    latest_html_alias = os.path.join(latest_dir, _dated_report_name(org_name, "Complete", _run_ts, "html")) if latest_dir else None
+    latest_pdf_alias = os.path.join(latest_dir, _dated_report_name(org_name, "Complete", _run_ts, "pdf")) if latest_dir else None
+    latest_html_compat = os.path.join(latest_dir, "report.html") if latest_dir else None
+    latest_pdf_compat = os.path.join(latest_dir, "report.pdf") if latest_dir else None
 
     _write_text_aliases(html, (html_path, named_html_alias, html_alias))
-    if write_pdf(html_path, pdf_path):
-        shutil.copy2(pdf_path, named_pdf_alias)
-        shutil.copy2(pdf_path, pdf_alias)
+    if latest_dir:
+        _write_text_aliases(html, (latest_html_alias, latest_html_compat))
+    pdf_ok = write_pdf(html_path, pdf_path)
+    if pdf_ok:
+        _copy_existing(pdf_path, (named_pdf_alias, pdf_alias))
+        if latest_dir:
+            _copy_existing(pdf_path, (latest_pdf_alias, latest_pdf_compat))
         log.info("PDF → %s", named_pdf_alias)
     else:
         log.info("HTML → %s  (no PDF tool found)", html_path)
+    if not keep_html and pdf_ok:
+        html_targets = [html_path, named_html_alias, html_alias]
+        if latest_dir:
+            html_targets.extend([latest_html_alias, latest_html_compat])
+        _cleanup_paths(tuple(path for path in html_targets if path))
 
     exec_body = build_org_report(source_dir, org_name, report_kind="exec")
     exec_html = build_html(f"{org_name} — Executive Summary", exec_body)
@@ -103,13 +217,31 @@ def generate_org_reports(source_dir: str, org_name: str, output_dir: str | None 
     exec_named_pdf_alias = os.path.join(output_dir, _dated_report_name(org_name, "Executive_Summary", _run_ts, "pdf"))
     exec_html_alias = os.path.join(output_dir, "report_exec_summary.html")
     exec_pdf_alias = os.path.join(output_dir, "report_exec_summary.pdf")
+    if latest_dir:
+        exec_html_path = exec_named_html_alias
+        exec_pdf_path = exec_named_pdf_alias
+        exec_html_alias = None
+        exec_pdf_alias = None
+    latest_exec_html_alias = os.path.join(latest_dir, _dated_report_name(org_name, "Executive_Summary", _run_ts, "html")) if latest_dir else None
+    latest_exec_pdf_alias = os.path.join(latest_dir, _dated_report_name(org_name, "Executive_Summary", _run_ts, "pdf")) if latest_dir else None
+    latest_exec_html_compat = os.path.join(latest_dir, "report_exec_summary.html") if latest_dir else None
+    latest_exec_pdf_compat = os.path.join(latest_dir, "report_exec_summary.pdf") if latest_dir else None
     _write_text_aliases(exec_html, (exec_html_path, exec_named_html_alias, exec_html_alias))
-    if write_pdf(exec_html_path, exec_pdf_path):
-        shutil.copy2(exec_pdf_path, exec_named_pdf_alias)
-        shutil.copy2(exec_pdf_path, exec_pdf_alias)
+    if latest_dir:
+        _write_text_aliases(exec_html, (latest_exec_html_alias, latest_exec_html_compat))
+    exec_pdf_ok = write_pdf(exec_html_path, exec_pdf_path)
+    if exec_pdf_ok:
+        _copy_existing(exec_pdf_path, (exec_named_pdf_alias, exec_pdf_alias))
+        if latest_dir:
+            _copy_existing(exec_pdf_path, (latest_exec_pdf_alias, latest_exec_pdf_compat))
         log.info("Exec Summary PDF → %s", exec_named_pdf_alias)
     else:
         log.info("Exec Summary HTML → %s  (no PDF tool found)", exec_html_path)
+    if not keep_html and exec_pdf_ok:
+        html_targets = [exec_html_path, exec_named_html_alias, exec_html_alias]
+        if latest_dir:
+            html_targets.extend([latest_exec_html_alias, latest_exec_html_compat])
+        _cleanup_paths(tuple(path for path in html_targets if path))
 
     backup_body = build_org_report(source_dir, org_name, report_kind="backup")
     backup_html = build_html(f"{org_name} — Backup Settings Report", backup_body)
@@ -119,13 +251,31 @@ def generate_org_reports(source_dir: str, org_name: str, output_dir: str | None 
     backup_named_pdf_alias = os.path.join(output_dir, _dated_report_name(org_name, "Backup_Settings", _run_ts, "pdf"))
     backup_html_alias = os.path.join(output_dir, "report_backup_settings.html")
     backup_pdf_alias = os.path.join(output_dir, "report_backup_settings.pdf")
+    if latest_dir:
+        backup_html_path = backup_named_html_alias
+        backup_pdf_path = backup_named_pdf_alias
+        backup_html_alias = None
+        backup_pdf_alias = None
+    latest_backup_html_alias = os.path.join(latest_dir, _dated_report_name(org_name, "Backup_Settings", _run_ts, "html")) if latest_dir else None
+    latest_backup_pdf_alias = os.path.join(latest_dir, _dated_report_name(org_name, "Backup_Settings", _run_ts, "pdf")) if latest_dir else None
+    latest_backup_html_compat = os.path.join(latest_dir, "report_backup_settings.html") if latest_dir else None
+    latest_backup_pdf_compat = os.path.join(latest_dir, "report_backup_settings.pdf") if latest_dir else None
     _write_text_aliases(backup_html, (backup_html_path, backup_named_html_alias, backup_html_alias))
-    if write_pdf(backup_html_path, backup_pdf_path):
-        shutil.copy2(backup_pdf_path, backup_named_pdf_alias)
-        shutil.copy2(backup_pdf_path, backup_pdf_alias)
+    if latest_dir:
+        _write_text_aliases(backup_html, (latest_backup_html_alias, latest_backup_html_compat))
+    backup_pdf_ok = write_pdf(backup_html_path, backup_pdf_path)
+    if backup_pdf_ok:
+        _copy_existing(backup_pdf_path, (backup_named_pdf_alias, backup_pdf_alias))
+        if latest_dir:
+            _copy_existing(backup_pdf_path, (latest_backup_pdf_alias, latest_backup_pdf_compat))
         log.info("Backup Settings PDF → %s", backup_named_pdf_alias)
     else:
         log.info("Backup Settings HTML → %s  (no PDF tool found)", backup_html_path)
+    if not keep_html and backup_pdf_ok:
+        html_targets = [backup_html_path, backup_named_html_alias, backup_html_alias]
+        if latest_dir:
+            html_targets.extend([latest_backup_html_alias, latest_backup_html_compat])
+        _cleanup_paths(tuple(path for path in html_targets if path))
 
     return 1
 
@@ -135,6 +285,7 @@ def build_org_report(
     exec_purpose: str = "",
     report_kind: str = "full",
 ) -> str:
+    _now = _current_run_ts()
     # ── Schema compatibility check ────────────────────────────────────────────
     _schema_warnings = check_backup_schema(org_dir)
     _schema_banner = ""
@@ -167,19 +318,25 @@ def build_org_report(
     wireless_stats = (
         load_json(os.path.join(org_dir, "wireless_connection_stats.json")) or {}
     )
-    # wireless_clients.json is {net_id: [client, …]} — flatten to a single list
+    # network_clients.json is {net_id: [client, …]} from GET /networks/{id}/clients.
+    # Older backups used wireless_clients.json from a now-unreliable wireless-only path.
+    def _flatten_client_records(raw: Any) -> List[Dict[str, Any]]:
+        if isinstance(raw, dict):
+            return [
+                cl for clients in raw.values()
+                if isinstance(clients, list)
+                for cl in clients
+                if isinstance(cl, dict)
+            ]
+        if isinstance(raw, list):
+            return [cl for cl in raw if isinstance(cl, dict)]
+        return []
+
+    network_clients_raw = load_json(os.path.join(org_dir, "network_clients.json")) or {}
     _wc_raw = load_json(os.path.join(org_dir, "wireless_clients.json")) or {}
-    if isinstance(_wc_raw, dict):
-        wireless_clients = [
-            cl for clients in _wc_raw.values()
-            if isinstance(clients, list)
-            for cl in clients
-            if isinstance(cl, dict)
-        ]
-    elif isinstance(_wc_raw, list):
-        wireless_clients = [cl for cl in _wc_raw if isinstance(cl, dict)]
-    else:
-        wireless_clients = []
+    network_clients = _flatten_client_records(network_clients_raw)
+    wireless_clients = _flatten_client_records(_wc_raw)
+    client_records = network_clients or wireless_clients
     switch_port_statuses_by_switch = (
         load_json(os.path.join(org_dir, "switch_port_statuses.json")) or {}
     )
@@ -198,11 +355,11 @@ def build_org_report(
     wireless_ssids = load_json(os.path.join(org_dir, "wireless_ssids.json")) or {}
     alerts_history = load_json(os.path.join(org_dir, "alerts_history.json")) or {}
     wireless_mesh_statuses = load_json(os.path.join(org_dir, "wireless_mesh_statuses.json")) or {}
-    pricing_payload = (
-        load_json(os.path.join(org_dir, "pricing.json"))
-        or load_json(os.path.join(BASE_DIR, "pricing.json"))
-        or {}
-    )
+    appliance_vlans = load_json(os.path.join(org_dir, "appliance_vlans.json")) or {}
+    appliance_dhcp_subnets = load_json(os.path.join(org_dir, "appliance_dhcp_subnets.json")) or {}
+    appliance_policy_backup = load_json(os.path.join(org_dir, "appliance_policy_backup.json")) or {}
+    pricing_payload = _load_pricing_payload(org_dir)
+    hardware_catalog = _load_hardware_catalog(org_dir)
 
     # switch_port_configs / statuses are {serial: [port, …]} dicts — flatten,
     # injecting switchSerial so downstream code can reference the parent switch.
@@ -233,6 +390,85 @@ def build_org_report(
         for n in networks
         if isinstance(n, dict) and n.get("id")
     }
+
+    def _merge_device_metadata() -> List[Dict]:
+        """Availability records are status-first; enrich them with inventory labels/models."""
+        metadata_by_serial: Dict[str, Dict] = {}
+        for source in (inventory_devices, devices_statuses_raw):
+            if not isinstance(source, list):
+                continue
+            for entry in source:
+                if not isinstance(entry, dict) or not entry.get("serial"):
+                    continue
+                serial = entry["serial"]
+                merged = metadata_by_serial.setdefault(serial, {})
+                for key in (
+                    "name",
+                    "model",
+                    "sku",
+                    "mac",
+                    "productType",
+                    "networkId",
+                    "tags",
+                    "lanIp",
+                ):
+                    if not merged.get(key) and entry.get(key):
+                        merged[key] = entry[key]
+
+        enriched: List[Dict] = []
+        seen: set[str] = set()
+        for device in devices_avail if isinstance(devices_avail, list) else []:
+            if not isinstance(device, dict):
+                continue
+            serial = device.get("serial")
+            if serial:
+                seen.add(serial)
+            merged = dict(device)
+            for key, value in metadata_by_serial.get(serial, {}).items():
+                if not merged.get(key) and value:
+                    merged[key] = value
+            net_id = merged.get("networkId") or (merged.get("network") or {}).get("id")
+            if net_id and not merged.get("network"):
+                merged["network"] = {
+                    "id": net_id,
+                    "name": network_names.get(net_id, net_id),
+                }
+            enriched.append(merged)
+
+        # Keep inventory-only devices visible instead of silently dropping them.
+        for serial, meta in sorted(metadata_by_serial.items()):
+            if serial in seen:
+                continue
+            device = dict(meta)
+            device["serial"] = serial
+            device.setdefault("status", "unknown")
+            net_id = device.get("networkId")
+            if net_id and not device.get("network"):
+                device["network"] = {
+                    "id": net_id,
+                    "name": network_names.get(net_id, net_id),
+                }
+            enriched.append(device)
+        return enriched
+
+    devices_avail = _merge_device_metadata()
+    device_by_serial = {
+        dev.get("serial"): dev
+        for dev in devices_avail
+        if isinstance(dev, dict) and dev.get("serial")
+    }
+    catalog_models = (
+        hardware_catalog.get("models")
+        if isinstance(hardware_catalog, dict) and isinstance(hardware_catalog.get("models"), dict)
+        else {}
+    )
+
+    def _known_poe_budget(model: str) -> int | float | None:
+        if not model:
+            return None
+        ref = catalog_models.get(model) or {}
+        budget = ref.get("poeBudgetWatts")
+        return budget if isinstance(budget, (int, float)) else None
 
     def _parse_dt(value: str) -> datetime | None:
         if not value:
@@ -349,32 +585,49 @@ def build_org_report(
 
     # Switch port issue analysis
     # Note: the Meraki API returns "errors" and "warnings" as lists of strings, not integers.
+    def _meaningful_port_errors(errors: list[str]) -> list[str]:
+        benign_fragments = (
+            "disconnected",
+            "not connected",
+            "no link",
+            "link down",
+            "down",
+        )
+        result = []
+        for error in errors:
+            text = str(error or "").strip()
+            if not text:
+                continue
+            lowered = text.lower()
+            if any(fragment in lowered for fragment in benign_fragments):
+                continue
+            result.append(text)
+        return result
+
     switch_port_issues = []
     if isinstance(switch_port_statuses, list):
         for port in switch_port_statuses[:100]:
             port_errors = port.get("errors") or []  # always a list
             if isinstance(port_errors, str):
                 port_errors = [port_errors]
+            port_errors = _meaningful_port_errors(port_errors)
             port_warnings = port.get("warnings") or []
             if isinstance(port_warnings, str):
                 port_warnings = [port_warnings]
             speed_raw = port.get("speed") or ""
-            # speed may be "10 Mbps", "100 Mbps", 10, 100, etc.
-            speed_num = None
-            try:
-                speed_num = int(str(speed_raw).split()[0])
-            except (ValueError, IndexError):
-                pass
             is_uplink = bool(port.get("isUplink"))
             if any(
                 [
                     bool(port_errors),
-                    is_uplink and speed_num in [10, 100],
+                    is_uplink and _is_low_speed_link(speed_raw),
                 ]
             ):
+                switch_serial = port.get("switchSerial", "Unknown")
+                switch_device = device_by_serial.get(switch_serial) or {}
                 switch_port_issues.append(
                     {
-                        "switch": port.get("switchSerial", "Unknown"),
+                        "switch": switch_serial,
+                        "switch_name": switch_device.get("name") or switch_device.get("model") or switch_serial,
                         "port": port.get("portId", "Unknown"),
                         "errors": port_errors,          # list of strings
                         "error_count": len(port_errors),
@@ -449,6 +702,24 @@ def build_org_report(
         ("Config Issues", str(len(config_issues))),
     ]
 
+    switch_devices = [
+        d for d in devices_avail
+        if isinstance(d, dict) and d.get("productType") == "switch"
+    ]
+    switch_budget_known = sum(
+        1 for d in switch_devices if _known_poe_budget(str(d.get("model") or "")) is not None
+    )
+    switch_budget_total = len(switch_devices)
+    poe_budget_note = (
+        f"The local hardware catalog contains PoE budget references for "
+        f"{switch_budget_known} of {switch_budget_total} switch device(s) in this backup. "
+        "Where a model is covered, the report shows measured draw against known hardware "
+        "budget and calculates headroom. Models not yet in the catalog are left as unknown "
+        "instead of estimated."
+        if switch_budget_total
+        else "No switch inventory was available for PoE budget coverage analysis."
+    )
+
     security_checks = (
         security_baseline.get("checks")
         if isinstance(security_baseline, dict) and security_baseline.get("checks")
@@ -516,31 +787,62 @@ def build_org_report(
     )
 
     # WAN
+    def _iter_wan_uplinks(raw_uplinks: Any) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        if not isinstance(raw_uplinks, list):
+            return rows
+        for item in raw_uplinks:
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("uplinks"), list):
+                for uplink in item["uplinks"]:
+                    if isinstance(uplink, dict):
+                        merged = dict(uplink)
+                        merged.setdefault("serial", item.get("serial"))
+                        merged.setdefault("model", item.get("model"))
+                        merged.setdefault("networkId", item.get("networkId"))
+                        rows.append(merged)
+            else:
+                rows.append(item)
+        return rows
+
+    _wan_uplinks = _iter_wan_uplinks(uplink_statuses)
     _wan_active = sum(
-        1 for u in (uplink_statuses if isinstance(uplink_statuses, list) else [])
+        1 for u in _wan_uplinks
         if isinstance(u, dict) and str(u.get("status", "")).lower() == "active"
     )
+    _wan_ready = sum(
+        1 for u in _wan_uplinks
+        if isinstance(u, dict) and str(u.get("status", "")).lower() == "ready"
+    )
     _wan_total = sum(
-        1 for u in (uplink_statuses if isinstance(uplink_statuses, list) else [])
+        1 for u in _wan_uplinks
         if isinstance(u, dict) and u.get("interface")
     )
-    _wan_down = _wan_total - _wan_active
+    _wan_down = _wan_total - _wan_active - _wan_ready
     if _wan_total == 0:
         _wan_rating, _wan_stat, _wan_detail = "info", "No WAN data", "uplink status unavailable"
     elif _wan_down > 0:
         _wan_rating = "crit" if _wan_active == 0 else "warn"
         _wan_stat = f"{_wan_down} link{'s' if _wan_down != 1 else ''} down"
-        _wan_detail = f"{_wan_active} active of {_wan_total} uplinks"
+        _wan_detail = f"{_wan_active} active · {_wan_ready} ready of {_wan_total} uplinks"
     else:
         _wan_rating = "good"
         _wan_stat = f"{_wan_active} active"
-        _wan_detail = f"{_wan_total} uplink{'s' if _wan_total != 1 else ''} healthy"
+        _wan_detail = (
+            f"{_wan_ready} standby-ready · {_wan_total} total"
+            if _wan_ready
+            else f"{_wan_total} uplink{'s' if _wan_total != 1 else ''} healthy"
+        )
     _wan_card = _hcard("WAN / Internet", _wan_rating, _wan_stat, _wan_detail)
 
     # Security
-    _sec_fail  = sum(1 for c in (security_checks or []) if isinstance(c, dict) and c.get("status") == "fail")
-    _sec_warn  = sum(1 for c in (security_checks or []) if isinstance(c, dict) and c.get("status") == "warning")
-    _sec_pass  = sum(1 for c in (security_checks or []) if isinstance(c, dict) and c.get("status") == "pass")
+    def _check_status(check: Dict[str, Any]) -> str:
+        return str(check.get("status") or "").strip().lower()
+
+    _sec_fail  = sum(1 for c in (security_checks or []) if isinstance(c, dict) and _check_status(c) == "fail")
+    _sec_warn  = sum(1 for c in (security_checks or []) if isinstance(c, dict) and _check_status(c) == "warning")
+    _sec_pass  = sum(1 for c in (security_checks or []) if isinstance(c, dict) and _check_status(c) == "pass")
     if _sec_fail > 0:
         _sec_rating = "crit"
     elif _sec_warn > 0:
@@ -553,18 +855,36 @@ def build_org_report(
         f"{_sec_pass} checks passed",
     )
 
-    # Lifecycle (EOL heuristic — flag known legacy model prefixes)
+    # Lifecycle: prefer Meraki inventory EOX metadata; fall back to known legacy prefixes.
     _EOL_PREFIXES = (
         "MR18", "MR24", "MR26", "MR32", "MR34",
         "MS220", "MS320", "MS420",
         "MX64", "MX65", "MX80", "MX84", "MX90", "MX400", "MX600",
     )
-    _eol_models = [
+    _eox_model_statuses: Dict[str, str] = {}
+    for _eox_dev in eox_devices:
+        if not isinstance(_eox_dev, dict):
+            continue
+        _model = str(_eox_dev.get("model") or "").strip()
+        _status = str(_eox_dev.get("status") or "").strip()
+        if _model and _status:
+            _eox_model_statuses.setdefault(_model, _status)
+    _eox_models = sorted(_eox_model_statuses)
+    _heuristic_eol_models = [
         m for m, _ in top_models
         if any(str(m).upper().startswith(p) for p in _EOL_PREFIXES)
     ]
+    _eol_models = _eox_models or _heuristic_eol_models
+    _eox_crit_count = sum(1 for d in eox_devices if str((d or {}).get("status") or "") == "endOfSupport")
+    _eox_warn_count = len(eox_devices) - _eox_crit_count
     _model_count = len(top_models)
-    if _eol_models:
+    if eox_devices:
+        _lc_rating = "crit" if _eox_crit_count else "warn"
+        _lc_stat = f"{len(eox_devices)} lifecycle flag{'s' if len(eox_devices) != 1 else ''}"
+        _lc_detail = ", ".join(
+            f"{model} ({status})" for model, status in list(_eox_model_statuses.items())[:3]
+        ) or "EOX inventory flags present"
+    elif _eol_models:
         _lc_rating = "crit"
         _lc_stat   = f"{len(_eol_models)} EOL model{'s' if len(_eol_models) != 1 else ''}"
         _lc_detail = ", ".join(_eol_models[:4]) + (" …" if len(_eol_models) > 4 else "")
@@ -620,7 +940,6 @@ def build_org_report(
     # =========================================================
     # COVER PAGE
     # =========================================================
-    _now = datetime.now()
     _report_date = _now.strftime("%B %d, %Y")
     _report_ts = _now.strftime("%B %d, %Y at %I:%M %p").replace(" 0", " ")
     cover_html = f"""
@@ -647,8 +966,22 @@ def build_org_report(
     # =========================================================
     # TABLE OF CONTENTS PAGE
     # =========================================================
+    def _toc_item(num: int, title: str, anchor: str, subitems: str = "") -> str:
+        return f"""
+        <li>
+          <a class="toc-link" href="#{_he(anchor)}">
+            <span class="toc-num">{num}</span>
+            <span class="toc-entry">{_he(title)}</span>
+          </a>
+          {subitems}
+        </li>
+        """
+
+    def _toc_sublist(items: str) -> str:
+        return f'<ol class="toc-sub">{items}</ol>' if items else ""
+
     toc_site_items = "".join(
-        f'<li class="toc-sub-item">{net_data["name"]}</li>'
+        f'<li class="toc-sub-item"><a href="#network-topology">{_he(net_data["name"])}</a></li>'
         for net_data in sorted(devices_by_network.values(), key=lambda x: x["name"])
     )
     switch_deep_dive_html, toc_switch_items = _build_switch_detail_section(
@@ -658,6 +991,61 @@ def build_org_report(
         switch_port_configs_by_switch,
         poe_by_serial,
         port_issues_by_switch,
+        hardware_catalog,
+    )
+    switch_deep_dive_is_appendix = len(toc_switch_items) > 12
+
+    def _build_switch_summary_for_main_report() -> str:
+        rows = []
+        switch_devices = [
+            d for d in devices_avail
+            if isinstance(d, dict) and d.get("productType") == "switch" and d.get("serial")
+        ]
+        for sw in sorted(switch_devices, key=lambda d: (str((d.get("network") or {}).get("name") or ""), str(d.get("name") or d.get("serial")))):
+            serial = sw.get("serial")
+            ports = switch_port_statuses_by_switch.get(serial) if isinstance(switch_port_statuses_by_switch, dict) else []
+            configs = switch_port_configs_by_switch.get(serial) if isinstance(switch_port_configs_by_switch, dict) else []
+            connected = sum(1 for p in ports if isinstance(p, dict) and str(p.get("status") or "").lower() == "connected") if isinstance(ports, list) else 0
+            poe = poe_by_serial.get(serial, {}) if isinstance(poe_by_serial, dict) else {}
+            avg_w = poe.get("avgWatts")
+            issues = len(port_issues_by_switch.get(serial, [])) if isinstance(port_issues_by_switch, dict) else 0
+            rows.append(
+                "<tr>"
+                f"<td>{_he((sw.get('network') or {}).get('name') or network_names.get(sw.get('networkId'), 'Unassigned'))}</td>"
+                f"<td>{_he(sw.get('name') or serial)}<br><code>{_he(serial)}</code></td>"
+                f"<td>{_model_cell(sw.get('model'))}</td>"
+                f"<td>{len(ports) if isinstance(ports, list) else '—'}</td>"
+                f"<td>{connected}</td>"
+                f"<td>{len(configs) if isinstance(configs, list) else '—'}</td>"
+                f"<td>{_he(f'{avg_w:.1f} W' if isinstance(avg_w, (int, float)) else '—')}</td>"
+                f"<td>{issues}</td>"
+                "</tr>"
+            )
+        return f"""
+    <section id="switch-deep-dive" class="report-section">
+      <h2>16. Switch Deep Dive Summary</h2>
+      <div class="summary-card">
+        <div class="summary-title">Technical Appendix Moved To Backup Settings</div>
+        <div class="summary-body">
+          This organization has <strong>{len(switch_devices)}</strong> switch(es), so the full per-port
+          appendix is intentionally kept in the companion <strong>Backup Settings Report</strong>.
+          The main report keeps the operational read concise while preserving complete port-level
+          evidence, VLAN mode, PoE, LLDP/CDP, and neighbor detail in the backup packet.
+        </div>
+      </div>
+      <table class="data dense">
+        <thead>
+          <tr><th>Site</th><th>Switch</th><th>Model</th><th>Ports</th><th>Connected</th><th>Configs</th><th>PoE Avg</th><th>Issues</th></tr>
+        </thead>
+        <tbody>{''.join(rows) if rows else '<tr><td colspan="8" class="empty-state">No switch inventory was present.</td></tr>'}</tbody>
+      </table>
+    </section>
+        """
+
+    switch_main_report_html = (
+        _build_switch_summary_for_main_report()
+        if switch_deep_dive_is_appendix
+        else switch_deep_dive_html
     )
     ap_interference_html = _build_ap_interference_section(
         devices_by_network,
@@ -673,84 +1061,59 @@ def build_org_report(
         devices_avail,
         networks_by_id,
     )
+    addressing_dhcp_html = _build_addressing_dhcp_section(
+        networks,
+        appliance_vlans,
+        appliance_dhcp_subnets,
+        client_records,
+        devices_avail,
+    )
     toc_switch_subitems = "".join(
         f'<li class="toc-sub-item"><a href="#{_he(anchor)}">{_he(label)}</a></li>'
         for anchor, label in toc_switch_items
     )
+    toc_entries = [
+        (1, "Executive Summary", "executive-summary", ""),
+        ("Guide", "How to Use This Report", "report-guide", ""),
+        (2, "Network Overview", "network-overview", ""),
+        (3, "Network Topology", "network-topology", _toc_sublist(toc_site_items)),
+        (4, "Traffic Flows & Bottleneck Analysis", "traffic-flows", ""),
+        (5, "Device Health & Issues", "device-health", ""),
+        (6, "PoE Power Analysis", "poe-analysis", ""),
+        (7, "Security Baseline", "security-baseline", ""),
+        (8, "Recommendations & Implementation Plan", "recommendations", ""),
+        (9, "CIS 8 Controls Assessment", "cis8", ""),
+        (10, "Licensing Summary", "licensing", ""),
+        (11, "Configuration Backup Coverage", "config-coverage", ""),
+        (12, "Hardware Cost & Refresh Plan", "budget-forecast", ""),
+        (13, "Internet Capacity & Utilization", "wan-capacity", ""),
+        (14, "AP Interference Audit", "ap-interference", ""),
+        (15, "Client Analysis", "client-analysis", ""),
+        (
+            16,
+            "Switch Deep Dive Summary" if switch_deep_dive_is_appendix else "Switch Deep Dive",
+            "switch-deep-dive",
+            "" if switch_deep_dive_is_appendix else _toc_sublist(toc_switch_subitems),
+        ),
+        (17, "UniFi Comparison & Refresh Planning", "unifi-comparison", ""),
+        (18, "K-12 VLAN Segmentation Reference", "vlan-reference", ""),
+    ]
+    backup_toc_entries = [
+        (1, "Backup Packet Guide", "backup-packet-guide", ""),
+        (2, "Configuration Backup Coverage", "config-coverage", ""),
+        (3, "Network Overview & Addressing", "network-overview", ""),
+        (4, "Security Baseline & MX Policy", "security-baseline", ""),
+        (5, "Licensing Summary", "licensing", ""),
+        (6, "Client Attachment Snapshot", "client-analysis", ""),
+        (7, "Switch Port Appendix", "switch-deep-dive", _toc_sublist(toc_switch_subitems)),
+    ]
+    toc_items_html = "".join(_toc_item(*entry) for entry in toc_entries)
+    backup_toc_items_html = "".join(_toc_item(*entry) for entry in backup_toc_entries)
     toc_html = f"""
     <section class="toc-page">
       <div class="toc-header">Table of Contents</div>
       <ol class="toc-list">
-        <li>
-          <span class="toc-num">1</span>
-          <span class="toc-entry">Executive Summary</span>
-        </li>
-        <li>
-          <span class="toc-num">2</span>
-          <span class="toc-entry">Network Overview</span>
-        </li>
-        <li>
-          <span class="toc-num">3</span>
-          <span class="toc-entry">Network Topology</span>
-          <ol class="toc-sub">
-            {toc_site_items}
-          </ol>
-        </li>
-        <li>
-          <span class="toc-num">4</span>
-          <span class="toc-entry">Traffic Flows &amp; Bottleneck Analysis</span>
-        </li>
-        <li>
-          <span class="toc-num">5</span>
-          <span class="toc-entry">Device Health &amp; Issues</span>
-        </li>
-        <li>
-          <span class="toc-num">6</span>
-          <span class="toc-entry">PoE Power Analysis</span>
-        </li>
-        <li>
-          <span class="toc-num">7</span>
-          <span class="toc-entry">Security Baseline</span>
-        </li>
-        <li>
-          <span class="toc-num">8</span>
-          <span class="toc-entry">Recommendations &amp; Implementation Plan</span>
-        </li>
-        <li>
-          <span class="toc-num">9</span>
-          <span class="toc-entry">CIS 8 Controls Assessment</span>
-        </li>
-        <li>
-          <span class="toc-num">10</span>
-          <span class="toc-entry">Licensing Summary</span>
-        </li>
-        <li>
-          <span class="toc-num">11</span>
-          <span class="toc-entry">Configuration Backup Coverage</span>
-        </li>
-        <li>
-          <span class="toc-num">12</span>
-          <span class="toc-entry">Hardware Cost &amp; Refresh Plan</span>
-        </li>
-        <li>
-          <span class="toc-num">13</span>
-          <span class="toc-entry">Internet Capacity &amp; Utilization</span>
-        </li>
-        <li>
-          <span class="toc-num">14</span>
-          <span class="toc-entry">AP Interference Audit</span>
-        </li>
-        <li>
-          <span class="toc-num">15</span>
-          <span class="toc-entry">Client Analysis</span>
-        </li>
-        <li>
-          <span class="toc-num">16</span>
-          <span class="toc-entry">Switch Deep Dive</span>
-          <ol class="toc-sub">
-            {toc_switch_subitems}
-          </ol>
-        </li>
+        {toc_items_html}
       </ol>
     </section>
     """
@@ -759,73 +1122,73 @@ def build_org_report(
     <section class="toc-page">
       <div class="toc-header">Table of Contents</div>
       <ol class="toc-list">
-        <li>
-          <span class="toc-num">1</span>
-          <span class="toc-entry">Network Overview</span>
-        </li>
-        <li>
-          <span class="toc-num">2</span>
-          <span class="toc-entry">Network Topology</span>
-          <ol class="toc-sub">
-            {toc_site_items}
-          </ol>
-        </li>
-        <li>
-          <span class="toc-num">3</span>
-          <span class="toc-entry">Traffic Flows &amp; Bottleneck Analysis</span>
-        </li>
-        <li>
-          <span class="toc-num">4</span>
-          <span class="toc-entry">Device Health &amp; Issues</span>
-        </li>
-        <li>
-          <span class="toc-num">5</span>
-          <span class="toc-entry">PoE Power Analysis</span>
-        </li>
-        <li>
-          <span class="toc-num">6</span>
-          <span class="toc-entry">Security Baseline</span>
-        </li>
-        <li>
-          <span class="toc-num">7</span>
-          <span class="toc-entry">Recommendations &amp; Implementation Plan</span>
-        </li>
-        <li>
-          <span class="toc-num">8</span>
-          <span class="toc-entry">CIS 8 Controls Assessment</span>
-        </li>
-        <li>
-          <span class="toc-num">9</span>
-          <span class="toc-entry">Licensing Summary</span>
-        </li>
-        <li>
-          <span class="toc-num">10</span>
-          <span class="toc-entry">Configuration Backup Coverage</span>
-        </li>
-        <li>
-          <span class="toc-num">11</span>
-          <span class="toc-entry">Hardware Cost &amp; Refresh Plan</span>
-        </li>
-        <li>
-          <span class="toc-num">12</span>
-          <span class="toc-entry">Internet Capacity &amp; Utilization</span>
-        </li>
-        <li>
-          <span class="toc-num">13</span>
-          <span class="toc-entry">AP Interference Audit</span>
-        </li>
-        <li>
-          <span class="toc-num">14</span>
-          <span class="toc-entry">Client Analysis</span>
-        </li>
-        <li>
-          <span class="toc-num">15</span>
-          <span class="toc-entry">Switch Deep Dive</span>
-          <ol class="toc-sub">
-            {toc_switch_subitems}
-          </ol>
-        </li>
+        {backup_toc_items_html}
       </ol>
+    </section>
+    """
+
+    complete_report_name = _dated_report_name(org_name, "Complete", _now, "pdf")
+    executive_report_name = _dated_report_name(org_name, "Executive_Summary", _now, "pdf")
+    backup_report_name = _dated_report_name(org_name, "Backup_Settings", _now, "pdf")
+
+    report_guide_html = f"""
+    <section id="report-guide" class="report-section">
+      <h2>How to Use This Report</h2>
+      <p>This report package is intentionally split by audience. The complete report provides the assessment narrative and evidence path, while companion reports keep leadership review and raw configuration backup material separate.</p>
+      <div class="kpi-row report-guide-grid">
+        <div class="kpi">
+          <div class="kpi-label">Fast Read</div>
+          <div class="kpi-value">Executive Summary</div>
+          <div class="kpi-note"><a href="{_he(executive_report_name)}">{_he(executive_report_name)}</a></div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Decision Path</div>
+          <div class="kpi-value">Sections 1, 7, 8, 12</div>
+          <div class="kpi-note">Health, security posture, priorities, and refresh planning.</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Backup Evidence</div>
+          <div class="kpi-value">Backup Settings</div>
+          <div class="kpi-note"><a href="{_he(backup_report_name)}">{_he(backup_report_name)}</a></div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Full Context</div>
+          <div class="kpi-value">Complete Report</div>
+          <div class="kpi-note"><a href="{_he(complete_report_name)}">{_he(complete_report_name)}</a></div>
+        </div>
+      </div>
+      <table class="data">
+        <thead><tr><th>Reader</th><th>Start Here</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Leadership / Finance</td><td>Executive Summary, Recommendations, Hardware Cost &amp; Refresh Plan</td><td>Shows the largest risks, renewal/refresh pressure, and recommended timing without port-level detail.</td></tr>
+          <tr><td>IT Operations</td><td>Inventory, topology, client analysis, and switch summary</td><td>Connects device inventory, site layout, clients, and operational symptoms.</td></tr>
+          <tr><td>Security / Compliance</td><td>Security Baseline, MX Firewall/Filtering Policy Backup, CIS 8 Controls, Configuration Coverage</td><td>Shows control posture and the exact backup evidence available for audit review.</td></tr>
+          <tr><td>Implementation Team</td><td>Backup Settings Report</td><td>Contains the detailed port/configuration appendix that supports remediation work.</td></tr>
+        </tbody>
+      </table>
+    </section>
+    """
+
+    backup_intro_html = f"""
+    <section id="backup-packet-guide" class="report-section">
+      <h2>1. Backup Packet Guide</h2>
+      <div class="summary-card">
+        <div class="summary-title">Purpose</div>
+        <div class="summary-body">
+          This companion report is the configuration and evidence packet. It keeps raw settings,
+          MX policy exports, addressing/DHCP, client attachment snapshots, and switch port detail
+          together so the main assessment can stay focused on conclusions and recommended action.
+        </div>
+      </div>
+      <table class="data">
+        <thead><tr><th>Evidence Area</th><th>Where It Appears</th><th>Use</th></tr></thead>
+        <tbody>
+          <tr><td>API artifact coverage</td><td>Configuration Backup Coverage</td><td>Confirms which JSON backup files are present or not applicable.</td></tr>
+          <tr><td>VLAN, subnet, DHCP</td><td>Network Overview &amp; Addressing</td><td>Documents MX interface subnets, relay/server mode, and DHCP utilization.</td></tr>
+          <tr><td>Firewall and filtering</td><td>Security Baseline &amp; MX Policy</td><td>Printable L3/L7, NAT, content filtering, VPN, group policy, and syslog snapshot.</td></tr>
+          <tr><td>Switch ports</td><td>Switch Port Appendix</td><td>Full per-port state, VLAN mode, PoE draw, LLDP/CDP neighbor, and issue flags.</td></tr>
+        </tbody>
+      </table>
     </section>
     """
 
@@ -981,6 +1344,201 @@ def build_org_report(
         )
     )
 
+    def _count_records(value: Any) -> int:
+        if isinstance(value, list):
+            return len(value)
+        if isinstance(value, dict):
+            total = 0
+            for item in value.values():
+                if isinstance(item, list):
+                    total += len(item)
+                elif isinstance(item, dict):
+                    total += _count_records(item)
+                elif item:
+                    total += 1
+            return total
+        return 0
+
+    def _exec_site_rows() -> str:
+        rows = []
+        for net_data in sorted(
+            devices_by_network.values(),
+            key=lambda item: (
+                -sum(1 for d in item.get("devices", []) if isinstance(d, dict) and d.get("status") != "online"),
+                item.get("name", ""),
+            ),
+        ):
+            devices = [d for d in net_data.get("devices", []) if isinstance(d, dict)]
+            site_total = len(devices)
+            site_online = sum(1 for d in devices if d.get("status") == "online")
+            site_alerting = sum(1 for d in devices if d.get("status") == "alerting")
+            site_offline = sum(1 for d in devices if d.get("status") in ("offline", "dormant"))
+            site_switches = sum(1 for d in devices if d.get("productType") == "switch")
+            site_aps = sum(1 for d in devices if d.get("productType") == "wireless")
+            site_mx = sum(1 for d in devices if d.get("productType") == "appliance")
+            site_pct = round(100 * site_online / max(site_total, 1)) if site_total else 0
+            rows.append(
+                "<tr>"
+                f"<td><strong>{_he(net_data.get('name', 'Unassigned'))}</strong></td>"
+                f"<td>{site_total}</td>"
+                f"<td>{site_online} / {site_total} ({site_pct}%)</td>"
+                f"<td>{site_offline}</td>"
+                f"<td>{site_alerting}</td>"
+                f"<td>{site_mx} MX · {site_switches} MS · {site_aps} MR</td>"
+                "</tr>"
+            )
+        return "".join(rows) or '<tr><td colspan="6" class="empty-state">No site-level device data available.</td></tr>'
+
+    _eox_counts: Dict[str, int] = {}
+    if isinstance(inventory_devices, list):
+        for _device in inventory_devices:
+            if not isinstance(_device, dict):
+                continue
+            _status = str((_device.get("eox") or {}).get("status") or "active")
+            _eox_counts[_status] = _eox_counts.get(_status, 0) + 1
+    _eox_risk_total = sum(count for status, count in _eox_counts.items() if status and status != "active")
+    _eox_summary = ", ".join(
+        f"{_he(status)}: {count}" for status, count in sorted(_eox_counts.items()) if status != "active"
+    ) or "No EOL/EOS inventory flags"
+
+    _exec_vlan_count = _count_records(appliance_vlans)
+    _exec_dhcp_count = _count_records(appliance_dhcp_subnets)
+    _exec_policy_count = _count_records(appliance_policy_backup)
+    _exec_switch_status_count = _count_records(switch_port_statuses_by_switch)
+    _exec_switch_config_count = _count_records(switch_port_configs_by_switch)
+    _exec_client_count = len(client_records)
+
+    def _confidence_badge(label: str, ok: bool, detail: str) -> str:
+        cls = "badge-ok" if ok else "badge-warn"
+        return (
+            "<tr>"
+            f"<td><strong>{_he(label)}</strong></td>"
+            f'<td><span class="badge {cls}">{"High" if ok else "Partial"}</span></td>'
+            f"<td>{_he(detail)}</td>"
+            "</tr>"
+        )
+
+    _data_confidence_html = "".join([
+        _confidence_badge(
+            "Inventory and device status",
+            bool(total_devices and devices_avail),
+            f"{total_devices} device records with Dashboard availability status."
+            if devices_avail
+            else "Inventory is present, but Dashboard availability status was not captured.",
+        ),
+        _confidence_badge(
+            "Client attachment detail",
+            bool(network_clients),
+            f"{_exec_client_count} wired/wireless client attachment records from network_clients.json."
+            if network_clients
+            else (
+                f"{_exec_client_count} legacy wireless client records; wired client visibility may be incomplete."
+                if wireless_clients
+                else "No client detail records were captured."
+            ),
+        ),
+        _confidence_badge(
+            "VLAN and DHCP evidence",
+            bool(_exec_vlan_count or _exec_dhcp_count),
+            f"{_exec_vlan_count} VLAN records and {_exec_dhcp_count} DHCP scope/utilization records."
+            if (_exec_vlan_count or _exec_dhcp_count)
+            else "No VLAN or DHCP scope telemetry was captured.",
+        ),
+        _confidence_badge(
+            "Firewall and filtering backup",
+            bool(appliance_policy_backup),
+            f"{_exec_policy_count} MX policy backup artifact group(s) captured."
+            if appliance_policy_backup
+            else "No MX firewall/content-filtering policy backup was captured.",
+        ),
+        _confidence_badge(
+            "WAN uplink evidence",
+            bool(uplink_statuses or appliance_uplinks_usage),
+            "WAN status and/or uplink usage artifacts are present."
+            if (uplink_statuses or appliance_uplinks_usage)
+            else "WAN uplink status and usage telemetry were not captured.",
+        ),
+    ])
+
+    _exec_price_models = pricing_payload.get("models") if isinstance(pricing_payload, dict) else {}
+    _exec_price_products = pricing_payload.get("products") if isinstance(pricing_payload, dict) else {}
+    _exec_unifi_map = pricing_payload.get("unifi_equivalents") if isinstance(pricing_payload, dict) else {}
+
+    def _exec_match_prefix(model: str, mapping: Dict[str, Any]) -> str | None:
+        text = str(model or "").upper()
+        return next((key for key in sorted(mapping, key=len, reverse=True) if text.startswith(str(key).upper())), None)
+
+    def _exec_product_key(entry: Any) -> str | None:
+        if isinstance(entry, dict):
+            value = entry.get("product_key") or entry.get("sku")
+            return str(value) if value else None
+        return None
+
+    def _exec_product(product_key: str | None) -> Dict[str, Any]:
+        if not product_key or not isinstance(_exec_price_products, dict):
+            return {}
+        product = _exec_price_products.get(product_key)
+        return product if isinstance(product, dict) else {}
+
+    def _exec_unit_price(model: str, product: Dict[str, Any]) -> int | float | None:
+        value = product.get("unit_cost") if isinstance(product, dict) else None
+        if isinstance(value, (int, float)):
+            return value
+        if not isinstance(_exec_price_models, dict):
+            return None
+        prefix = _exec_match_prefix(model, _exec_price_models)
+        data = _exec_price_models.get(model) or _exec_price_models.get(prefix or "")
+        if not isinstance(data, dict):
+            return None
+        value = data.get("unifi_unit_cost")
+        return value if isinstance(value, (int, float)) else None
+
+    def _exec_care_price(product: Dict[str, Any]) -> int | None:
+        value = product.get("ui_care_5yr_unit_cost") if isinstance(product, dict) else None
+        return int(value) if isinstance(value, (int, float)) else None
+
+    def _exec_money(value: int | float | None) -> str:
+        if not isinstance(value, (int, float)):
+            return "Pricing needed"
+        return f"${value:,.0f}" if float(value).is_integer() else f"${value:,.2f}"
+
+    _exec_migration_qty = 0
+    _exec_migration_excluded = 0
+    _exec_migration_total = 0
+    _exec_migration_care = 0
+    _exec_migration_families: Dict[str, int] = {}
+    _exec_source_devices = devices_avail if isinstance(devices_avail, list) and devices_avail else inventory_devices
+    for _device in _exec_source_devices if isinstance(_exec_source_devices, list) else []:
+        if not isinstance(_device, dict):
+            continue
+        _model = str(_device.get("model") or _device.get("sku") or "").strip()
+        if not _model:
+            continue
+        _status = str(_device.get("status") or "unknown").lower()
+        if _status not in {"online", "alerting"}:
+            _exec_migration_excluded += 1
+            continue
+        _map_key = _exec_match_prefix(_model, _exec_unifi_map) if isinstance(_exec_unifi_map, dict) else None
+        if not _map_key:
+            continue
+        _entry = _exec_unifi_map[_map_key]
+        _product = _exec_product(_exec_product_key(_entry))
+        _unit = _exec_unit_price(_model, _product)
+        _care = _exec_care_price(_product)
+        _exec_migration_qty += 1
+        _exec_migration_families[_model] = _exec_migration_families.get(_model, 0) + 1
+        if isinstance(_unit, int):
+            _exec_migration_total += _unit
+        if isinstance(_care, int):
+            _exec_migration_care += _care
+
+    _exec_migration_note = (
+        f"{_exec_migration_qty} active/alerting mapped device(s) priced from the UniFi reference; "
+        f"{_exec_migration_excluded} dormant/offline/unknown device(s) excluded from the planning quote."
+        if _exec_migration_qty
+        else "No active/alerting devices matched the UniFi migration reference."
+    )
+
     exec_html = f"""
     <section id="executive-summary" class="report-section exec-full-page">
       <h2>1. Executive Summary</h2>
@@ -1056,6 +1614,59 @@ def build_org_report(
                 traffic segmentation.</td>
           </tr>
         </tbody>
+      </table>
+
+      <h3>Site Health Snapshot</h3>
+      <table class="data dense">
+        <thead>
+          <tr><th>Site / Network</th><th>Devices</th><th>Online</th><th>Dormant / Offline</th><th>Alerting</th><th>Device Mix</th></tr>
+        </thead>
+        <tbody>{_exec_site_rows()}</tbody>
+      </table>
+
+      <h3>Lifecycle, Licensing &amp; Planning Snapshot</h3>
+      <table class="data dense">
+        <thead>
+          <tr><th>Area</th><th>Executive Read</th><th>Planning Implication</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Lifecycle</strong></td>
+            <td>{_eox_risk_total} device(s) with EOL/EOS lifecycle flags. {_eox_summary}</td>
+            <td>Use lifecycle status to prioritize refresh waves before expanding scope to healthy devices.</td>
+          </tr>
+          <tr>
+            <td><strong>Licensing</strong></td>
+            <td>{_lic_expired} expired license key(s); {_lic_active} active license record(s); {_he(_lic_mode or "unknown")} model.</td>
+            <td>Resolve licensing exposure before relying on Dashboard visibility or security enforcement.</td>
+          </tr>
+          <tr>
+            <td><strong>Migration Budget</strong></td>
+            <td>{_exec_money(_exec_migration_total)} hardware planning total; {_exec_money(_exec_migration_care)} optional 5-year UI Care add-on.</td>
+            <td>{_he(_exec_migration_note)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Backup Evidence Captured</h3>
+      <table class="data dense">
+        <thead>
+          <tr><th>Evidence Area</th><th>Records Captured</th><th>Where To Read It</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Switch port status / configs</td><td>{_exec_switch_status_count} status · {_exec_switch_config_count} config</td><td>Backup Settings Report, Switch Port Appendix</td></tr>
+          <tr><td>VLANs and DHCP scopes</td><td>{_exec_vlan_count} VLAN · {_exec_dhcp_count} DHCP</td><td>Complete Report Section 2 and Backup Settings Report</td></tr>
+          <tr><td>Firewall, filtering, group policy, VPN, syslog</td><td>{_exec_policy_count}</td><td>Complete Report Section 7 and Backup Settings Report</td></tr>
+          <tr><td>Client attachment detail</td><td>{_exec_client_count}</td><td>Complete Report Section 15 and Backup Settings Report</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Data Confidence Snapshot</h3>
+      <table class="data dense">
+        <thead>
+          <tr><th>Data Area</th><th>Confidence</th><th>Interpretation</th></tr>
+        </thead>
+        <tbody>{_data_confidence_html}</tbody>
       </table>
 
       <h3>Health at a Glance</h3>
@@ -1203,6 +1814,7 @@ def build_org_report(
           {"".join(lifecycle_rows) if lifecycle_rows else '<tr><td colspan="6" class="empty-state">No EOX lifecycle data available in this backup.</td></tr>'}
         </tbody>
       </table>
+      {addressing_dhcp_html}
       <h3>Model Inventory &amp; Capabilities</h3>
       <table class="data">
         <thead>
@@ -1215,13 +1827,9 @@ def build_org_report(
         </tbody>
       </table>
       <div class="summary-card">
-        <div class="summary-title">PoE Budget Note</div>
+        <div class="summary-title">PoE Budget Reference Coverage</div>
         <div class="summary-body">
-          Current backups include measured PoE consumption and per-port allocation signals, but
-          they do not yet include authoritative switch maximum PoE budget values. The report can
-          therefore show actual draw and PoE-heavy switches today, but budget headroom remains an
-          API collection gap that should be added to the backup pipeline before final capacity
-          planning or switch replacement decisions are made.
+          {_he(poe_budget_note)}
         </div>
       </div>
     </section>
@@ -1347,6 +1955,8 @@ def build_org_report(
     # SECTION 4: TRAFFIC FLOWS & BOTTLENECK ANALYSIS
     # =========================================================
     def _speed_num(s) -> int | None:
+        if not _is_low_speed_link(s):
+            return None
         try:
             return int(str(s).split()[0])
         except (ValueError, IndexError):
@@ -1612,7 +2222,7 @@ def build_org_report(
                         sec += (
                             f"<tr>"
                             f"<td>{_he(_ap_name)}</td>"
-                            f"<td><code>{_he(_ap_model)}</code></td>"
+                            f"<td>{_model_cell(_ap_model)}</td>"
                             f'<td><span class="badge {_ap_s_cls}">{_ap_status}</span></td>'
                             f'<td><span class="badge {_util_cls}">{_tot_util:.0f}%</span></td>'
                             f"<td>{_tx_util:.0f}%</td>"
@@ -1655,7 +2265,7 @@ def build_org_report(
                 sec += (
                     f"<tr>"
                     f"<td>{_he(_nm)}</td>"
-                    f"<td><code>{_he(_mod)}</code></td>"
+                    f"<td>{_model_cell(_mod)}</td>"
                     f'<td><span class="badge {_scls}">{_st}</span></td>'
                     f'<td><span class="badge {_ucls}">{_tu:.0f}%</span></td>'
                     f"<td>{_tx:.0f}%</td><td>{_n80:.0f}%</td>"
@@ -1728,7 +2338,7 @@ def build_org_report(
         <table class="data">
           <thead>
             <tr>
-              <th>Switch Serial</th><th>Port</th><th>Errors</th>
+              <th>Switch</th><th>Serial</th><th>Port</th><th>Errors</th>
               <th>Speed</th><th>Duplex</th><th>PoE Mode</th><th>Status</th>
             </tr>
           </thead>
@@ -1738,13 +2348,14 @@ def build_org_report(
             err_display = ", ".join(issue["errors"]) if issue["errors"] else "—"
             issues_html += (
                 f"<tr>"
-                f"<td>{issue['switch']}</td>"
+                f"<td>{_he(issue.get('switch_name') or issue['switch'])}</td>"
+                f"<td><code>{_he(issue['switch'])}</code></td>"
                 f"<td>{issue['port']}</td>"
-                f"<td>{err_display}</td>"
-                f"<td>{issue['speed']}</td>"
-                f"<td>{issue['duplex']}</td>"
-                f"<td>{issue['poeMode']}</td>"
-                f"<td>{issue['status']}</td>"
+                f"<td>{_he(err_display)}</td>"
+                f"<td>{_he(str(issue['speed']))}</td>"
+                f"<td>{_he(str(issue['duplex']))}</td>"
+                f"<td>{_he(str(issue['poeMode']))}</td>"
+                f"<td>{_he(str(issue['status']))}</td>"
                 f"</tr>"
             )
         issues_html += "</tbody></table>"
@@ -1847,10 +2458,22 @@ def build_org_report(
                   </thead>
                   <tbody>
                 """
-                for ssid in ssids[:20]:
+                hidden_default_count = 0
+                rendered_count = 0
+                for ssid in ssids:
                     if not isinstance(ssid, dict):
                         continue
                     ssid_label = ssid.get("name") or f"SSID {ssid.get('number', '')}"
+                    is_default_disabled = (
+                        not ssid.get("enabled")
+                        and str(ssid_label).lower().startswith("unconfigured ssid")
+                    )
+                    if is_default_disabled:
+                        hidden_default_count += 1
+                        continue
+                    if rendered_count >= 20:
+                        continue
+                    rendered_count += 1
                     issues_html += (
                         "<tr>"
                         f"<td>{_he(ssid_label)}</td>"
@@ -1863,13 +2486,22 @@ def build_org_report(
                         f"<td>{'Yes' if ssid.get('useVlanTagging') else 'No'}</td>"
                         "</tr>"
                     )
+                if hidden_default_count:
+                    issues_html += (
+                        "<tr>"
+                        f"<td colspan=\"8\">{hidden_default_count} disabled default/unconfigured SSID slot(s) hidden.</td>"
+                        "</tr>"
+                    )
                 issues_html += "</tbody></table>"
 
         if isinstance(wireless_mesh_statuses, dict) and wireless_mesh_statuses:
             mesh_notes = []
             for net_id, payload in wireless_mesh_statuses.items():
                 if isinstance(payload, dict) and payload.get("error"):
-                    mesh_notes.append(f"{network_names.get(net_id, net_id)}: {payload.get('error')}")
+                    error_text = str(payload.get("error") or "")
+                    if "No MR repeaters found" in error_text:
+                        continue
+                    mesh_notes.append(f"{network_names.get(net_id, net_id)}: {error_text}")
             if mesh_notes:
                 issues_html += (
                     '<div class="summary-card">'
@@ -1881,11 +2513,65 @@ def build_org_report(
 
     # Firmware upgrade history summary
     if isinstance(firmware_upgrades, list) and firmware_upgrades:
+        fw_status_by_key: Dict[tuple[str, str], List[str]] = {}
         fw_rows = []
         fw_items = []
+
+        def _version_name(value: Any) -> str:
+            if isinstance(value, dict):
+                return str(value.get("shortName") or value.get("firmware") or "—")
+            if isinstance(value, str):
+                return value
+            return "—"
+
+        def _infer_product(*versions: Any) -> str:
+            text = " ".join(_version_name(version) for version in versions).upper()
+            if "MX " in text:
+                return "appliance"
+            if "MS " in text or "CS " in text or "IOS XE" in text:
+                return "switch"
+            if "MR " in text:
+                return "wireless"
+            if "MV " in text:
+                return "camera"
+            if "MG " in text:
+                return "cellularGateway"
+            return "—"
+
         for item in firmware_upgrades:
             if not isinstance(item, dict):
                 continue
+            products = item.get("products") or {}
+            product_names = [name for name in ("appliance", "switch", "wireless") if products.get(name)]
+            if not product_names:
+                product_types = item.get("productTypes") or []
+                if isinstance(product_types, list):
+                    product_names = [str(product) for product in product_types]
+            current_version = item.get("currentVersion") or {}
+            current_name = _version_name(current_version)
+            target_version = (item.get("nextUpgrade") or {}).get("toVersion") or item.get("toVersion") or {}
+            available_versions = item.get("availableVersions") or []
+            stable_versions = [
+                version for version in available_versions
+                if isinstance(version, dict) and str(version.get("releaseType", "")).lower() == "stable"
+            ]
+            if not target_version and stable_versions:
+                target_version = stable_versions[0]
+            target_name = _version_name(target_version)
+            if not product_names:
+                inferred = _infer_product(current_version, target_version, item.get("fromVersion"), item.get("toVersion"))
+                product_names = [] if inferred == "—" else [inferred]
+            net_name = (item.get("network") or {}).get("name") or (item.get("network") or {}).get("id", "—")
+            if current_name != "—" or item.get("isUpgradeAvailable") or item.get("nextUpgrade"):
+                product_label = ", ".join(product_names) or _infer_product(current_version, target_version)
+                fw_status_by_key[(net_name, product_label)] = [
+                    net_name,
+                    product_label,
+                    current_name,
+                    target_name,
+                    "Yes" if item.get("isUpgradeAvailable") else "No",
+                    str(item.get("upgradeStrategy") or "—"),
+                ]
             dt = _parse_dt(item.get("time", ""))
             if not dt and item.get("completedAt"):
                 try:
@@ -1894,6 +2580,12 @@ def build_org_report(
                     dt = None
             fw_items.append((dt, item))
         fw_items.sort(key=lambda x: x[0] or datetime.min, reverse=True)
+        fw_status_rows = sorted(fw_status_by_key.values(), key=lambda row: (row[0], row[1]))
+        if fw_status_rows:
+            issues_html += render_section(
+                "Firmware Status & Available Versions",
+                [["Network", "Product", "Current", "Dashboard Target / Stable", "Upgrade Available", "Strategy"]] + fw_status_rows,
+            )
         for dt, item in fw_items[:12]:
             net = (item.get("network") or {}).get("name") or (item.get("network") or {}).get("id", "—")
             to_ver = (item.get("toVersion") or {}).get("shortName") or (item.get("toVersion") or {}).get("firmware", "—")
@@ -1912,17 +2604,39 @@ def build_org_report(
         )
 
     if eox_devices:
-        issues_html += render_section(
-            "End-of-Life / End-of-Support Inventory",
-            [["Device", "Model", "Network", "Status", "End of Sale", "End of Support"]]
-            + [[
-                d.get("name", "—"),
-                d.get("model", "—"),
-                d.get("network", "—"),
-                d.get("status", "—"),
-                d.get("endOfSale", "—"),
-                d.get("endOfSupport", "—"),
-            ] for d in eox_devices[:20]],
+        eox_rows = []
+        for device in eox_devices[:20]:
+            support_dt = _parse_dt(device.get("endOfSupport") or "")
+            row_class = "row-eos-announced"
+            if support_dt:
+                now_for_compare = _now
+                if support_dt.tzinfo and not now_for_compare.tzinfo:
+                    now_for_compare = now_for_compare.replace(tzinfo=support_dt.tzinfo)
+                if support_dt <= now_for_compare + timedelta(days=730):
+                    row_class = "row-eos-critical"
+            eox_rows.append(
+                "<tr class=\"%s\"><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                % (
+                    row_class,
+                    _he(device.get("name", "—")),
+                    _he(device.get("model", "—")),
+                    _he(device.get("network", "—")),
+                    _he(device.get("status", "—")),
+                    _he(str(device.get("endOfSale") or "—")),
+                    _he(str(device.get("endOfSupport") or "—")),
+                )
+            )
+        issues_html += (
+            "<h2>End-of-Life / End-of-Support Inventory</h2>"
+            '<table class="data">'
+            "<thead><tr><th>Device</th><th>Model</th><th>Network</th><th>Status</th><th>End of Sale</th><th>End of Support</th></tr></thead>"
+            "<tbody>"
+            + "".join(eox_rows)
+            + "</tbody></table>"
+            '<div class="summary-card"><div class="summary-body">'
+            '<span class="badge badge-fail">Red</span> End of support is within 2 years. '
+            '<span class="badge badge-warn">Yellow</span> EOL/EOS has been announced but support is more than 2 years out or no support date was provided.'
+            "</div></div>"
         )
 
     # Alerts summary
@@ -1943,7 +2657,10 @@ def build_org_report(
                     "network": network_names.get(net_id, net_id),
                 })
         alert_items.sort(key=lambda x: x["dt"] or datetime.min, reverse=True)
-        recent = [a for a in alert_items if a["dt"] and a["dt"] >= datetime.now(tz=a["dt"].tzinfo) - timedelta(days=30)]
+        recent = [
+            a for a in alert_items
+            if a["dt"] and a["dt"] >= _now.replace(tzinfo=a["dt"].tzinfo) - timedelta(days=30)
+        ]
         counts = Counter([a["type"] for a in recent])
         if counts:
             issues_html += render_section(
@@ -1962,7 +2679,17 @@ def build_org_report(
                 ] for a in alert_items[:10]],
             )
 
-    if not switch_port_issues and not config_issues and not high_util_devices:
+    has_issue_content = any(
+        [
+            switch_port_issues,
+            config_issues,
+            high_util_devices,
+            eox_devices,
+            _lic_expired,
+            isinstance(alerts_history, dict) and any(alerts_history.values()),
+        ]
+    )
+    if not has_issue_content:
         issues_html += (
             '<div class="summary-card">'
             '<div class="summary-body">No significant issues detected in the current data snapshot.</div>'
@@ -1979,16 +2706,33 @@ def build_org_report(
       <h2>6. PoE Power Analysis</h2>
     """
     if poe_switches:
+        poe_switch_rows = []
+        for s in poe_switches[:20]:
+            serial = s.get("serial", "")
+            device = device_by_serial.get(serial) or {}
+            model = str(device.get("model") or "")
+            budget = _known_poe_budget(model)
+            observed_watts = float(s.get("avgWatts", 0) or 0)
+            headroom = (
+                f"{max(0.0, float(budget) - observed_watts):.1f} W"
+                if budget is not None
+                else "Unknown"
+            )
+            switch_name = device.get("name") or model or serial
+            poe_switch_rows.append(
+                [
+                    f"{switch_name} ({serial})" if switch_name != serial else serial,
+                    model or "Unknown",
+                    f"{observed_watts:.1f} W",
+                    f"{budget:g} W" if budget is not None else "Unknown",
+                    headroom,
+                    f"{float(s.get('powerUsageInWh', 0) or 0):.1f} Wh",
+                ]
+            )
         poe_html += render_section(
             "PoE Consumption by Switch (24 h average)",
-            [
-                [
-                    s.get("serial", ""),
-                    f"{float(s.get('avgWatts', 0)):.1f} W",
-                    f"{float(s.get('powerUsageInWh', 0)):.1f} Wh",
-                ]
-                for s in poe_switches[:20]
-            ],
+            poe_switch_rows,
+            headers=["Switch", "Model", "Observed Avg", "Known Budget", "Headroom", "24 h Energy"],
         )
     if poe_ports:
         poe_html += render_section(
@@ -2088,13 +2832,15 @@ def build_org_report(
             "review this section after any major firmware or policy change."
         )
 
+    appliance_policy_html = _build_appliance_policy_section(networks, appliance_policy_backup)
+
     security_html = f"""
     <section id="security-baseline" class="report-section">
       <h2>7. Security &amp; Compliance</h2>
       <p>This section evaluates security posture from two angles: an appliance-level baseline
-         check (AMP, IDS/IPS, spoof protection, and internet exposure) and a CIS Controls
-         mapping in the following section. Together they form the security health layer of
-         this network audit.</p>
+         check (AMP, IDS/IPS, spoof protection, and internet exposure), printable MX policy
+         backups, and a CIS Controls mapping in the following section. Together they form the
+         security health layer of this network audit.</p>
 
       <div class="summary-card">
         <div class="summary-title">Security Posture Summary</div>
@@ -2102,11 +2848,6 @@ def build_org_report(
           {_sec_posture}
           <br><br>
           <strong>Firewall &amp; Internet Exposure:</strong> {_pf_note}
-          <br><br>
-          <em>Note: L3 inbound firewall rule detail requires a separate collection step
-          (<code>GET /networks/&#123;id&#125;/appliance/firewall/inboundFirewallRules</code>).
-          That data is not present in this backup set. Add it to the pipeline to surface
-          specific rule-level exposure in future reports.</em>
         </div>
       </div>
 
@@ -2123,6 +2864,7 @@ def build_org_report(
       </table>
 
       {render_security_baseline(security_checks)}
+      {appliance_policy_html}
     </section>
     """
 
@@ -2463,10 +3205,12 @@ def build_org_report(
     os_counts: Dict[str, int] = {}
     vlan_counts: Dict[str, int] = {}
     auth_counts: Dict[str, int] = {}
+    connection_counts: Dict[str, int] = {}
+    top_client_rows: list[list[str]] = []
     rssi_buckets = {"Excellent (>-60)": 0, "Good (-60 to -70)": 0,
                     "Fair (-70 to -80)": 0, "Poor (<-80)": 0}
 
-    for cl in wireless_clients:
+    for cl in client_records:
         ssid = cl.get("ssid") or "Unknown"
         ssid_counts[ssid] = ssid_counts.get(ssid, 0) + 1
 
@@ -2478,6 +3222,9 @@ def build_org_report(
 
         auth = cl.get("status") or cl.get("authType") or "Unknown"
         auth_counts[auth] = auth_counts.get(auth, 0) + 1
+
+        connection = cl.get("recentDeviceConnection") or ("Wireless" if cl.get("ssid") else "Unknown")
+        connection_counts[connection] = connection_counts.get(connection, 0) + 1
 
         rssi = cl.get("rssi")
         if rssi is not None:
@@ -2494,17 +3241,83 @@ def build_org_report(
             except (ValueError, TypeError):
                 pass
 
+    def _usage_total_kb(client: Dict[str, Any]) -> float:
+        usage = client.get("usage") or {}
+        sent = usage.get("sent") if isinstance(usage, dict) else 0
+        recv = usage.get("recv") if isinstance(usage, dict) else 0
+        try:
+            return float(sent or 0) + float(recv or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    for cl in sorted(client_records, key=_usage_total_kb, reverse=True)[:15]:
+        top_client_rows.append([
+            cl.get("description") or cl.get("mac") or cl.get("id") or "Unknown",
+            cl.get("recentDeviceConnection") or ("Wireless" if cl.get("ssid") else "Unknown"),
+            cl.get("recentDeviceName") or cl.get("recentDeviceSerial") or "Unknown",
+            cl.get("ssid") or "—",
+            str(cl.get("vlan") or cl.get("namedVlan") or "—"),
+            _format_usage_kb(int(_usage_total_kb(cl))),
+        ])
+
     def _top_rows(d: Dict[str, int], limit: int = 10) -> str:
         rows = sorted(d.items(), key=lambda x: x[1], reverse=True)[:limit]
-        return "".join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in rows)
+        return "".join(f"<tr><td>{_he(str(k))}</td><td>{v}</td></tr>" for k, v in rows)
 
     rssi_rows = "".join(
         f"<tr><td>{bucket}</td><td>{cnt}</td></tr>"
         for bucket, cnt in rssi_buckets.items()
     )
+    overview_rows: list[list[str]] = []
+    overview_totals = {
+        "clients": 0,
+        "heavy": 0,
+        "average_kb": 0,
+        "heavy_average_kb": 0,
+        "networks": 0,
+    }
+    if isinstance(clients_overview_raw, dict):
+        for net_id, overview in sorted(clients_overview_raw.items(), key=lambda item: network_names.get(item[0], item[0])):
+            if not isinstance(overview, dict) or overview.get("error"):
+                continue
+            counts = overview.get("counts") or {}
+            usages = overview.get("usages") or {}
+            total_clients = int(counts.get("total") or 0)
+            heavy_clients = int(counts.get("withHeavyUsage") or 0)
+            average_kb = int(usages.get("average") or 0)
+            heavy_average_kb = int(usages.get("withHeavyUsageAverage") or 0)
+            overview_totals["clients"] += total_clients
+            overview_totals["heavy"] += heavy_clients
+            overview_totals["average_kb"] += average_kb
+            overview_totals["heavy_average_kb"] += heavy_average_kb
+            overview_totals["networks"] += 1
+            overview_rows.append([
+                network_names.get(net_id, net_id),
+                str(total_clients),
+                str(heavy_clients),
+                _format_usage_kb(average_kb),
+                _format_usage_kb(heavy_average_kb),
+            ])
 
-    if wireless_clients:
+    client_source = "network_clients.json" if network_clients else "wireless_clients.json"
+    if client_records:
         client_tables = f"""
+        <div class="summary-card">
+          <div class="summary-title">Source Data Coverage</div>
+          <div class="summary-body">
+            Client detail source: <code>{_he(client_source)}</code>. The preferred source is
+            <code>network_clients.json</code> from <code>GET /networks/{{networkId}}/clients</code>,
+            because it includes wired and wireless clients. Older backups may only include
+            wireless-only fallback data.
+          </div>
+        </div>
+
+        <h3>Clients by Connection Type</h3>
+        <table class="data">
+          <thead><tr><th>Connection Type</th><th>Client Count</th></tr></thead>
+          <tbody>{_top_rows(connection_counts)}</tbody>
+        </table>
+
         <h3>Clients by SSID</h3>
         <table class="data">
           <thead><tr><th>SSID</th><th>Client Count</th></tr></thead>
@@ -2528,19 +3341,50 @@ def build_org_report(
           <thead><tr><th>RSSI Range</th><th>Client Count</th></tr></thead>
           <tbody>{rssi_rows}</tbody>
         </table>
+
+        <h3>Top Clients by Usage</h3>
+        <table class="data">
+          <thead><tr><th>Client</th><th>Connection</th><th>Recent Device</th><th>SSID</th><th>VLAN</th><th>Usage</th></tr></thead>
+          <tbody>{''.join('<tr>' + ''.join(f'<td>{_he(str(cell))}</td>' for cell in row) + '</tr>' for row in top_client_rows)}</tbody>
+        </table>
         """
     else:
         client_tables = """
         <div class="summary-card">
-          <div class="summary-body">No wireless client data available in this backup.</div>
+          <div class="summary-title">Source Data Coverage</div>
+          <div class="summary-body">
+            No client detail records were available in this backup. Current backups should collect
+            <code>network_clients.json</code> from <code>GET /networks/{networkId}/clients</code>.
+            Older backups may only have <code>wireless_clients.json</code>, which does not cover
+            wired clients and may be unavailable in current Dashboard API versions.
+          </div>
         </div>"""
+        if overview_rows:
+            average_usage = int(overview_totals["average_kb"] / max(overview_totals["networks"], 1))
+            heavy_average_usage = int(overview_totals["heavy_average_kb"] / max(overview_totals["networks"], 1))
+            client_tables += render_section(
+                "Client Overview Summary",
+                [
+                    ["Metric", "Value"],
+                    ["Networks with overview data", str(overview_totals["networks"])],
+                    ["Total clients", str(overview_totals["clients"])],
+                    ["Heavy-usage clients", str(overview_totals["heavy"])],
+                    ["Average usage per network", _format_usage_kb(average_usage)],
+                    ["Average heavy-client usage per network", _format_usage_kb(heavy_average_usage)],
+                ],
+            )
+            client_tables += render_section(
+                "Client Overview by Network",
+                [["Network", "Clients", "Heavy Usage", "Avg Usage", "Heavy Avg Usage"]] + overview_rows,
+            )
 
     client_analysis_html = f"""
     <section id="client-analysis" class="report-section">
       <h2>15. Client Analysis</h2>
-      <p>Analysis of <strong>{len(wireless_clients)}</strong> wireless client record(s) captured
-         in this backup. Wired client detail requires switch port client data which is not
-         collected in the current pipeline.</p>
+      <p>Analysis of <strong>{len(client_records)}</strong> client detail record(s)
+         and <strong>{overview_totals["networks"]}</strong> network overview record(s) captured
+         in this backup. Network client detail includes recent wired/wireless attachment, VLAN,
+         SSID where applicable, OS/device prediction, and usage when returned by the Meraki API.</p>
       {client_tables}
     </section>
     """
@@ -2548,109 +3392,463 @@ def build_org_report(
     # =========================================================
     # SECTION 17: UNIFI COMPARISON & REFRESH PLANNING
     # =========================================================
-    # Heuristic model mapping: Meraki family -> UniFi equivalent + indicative USD street price
-    # Prices are published MSRP / street estimates (2025–2026) and carry a planning-only disclaimer.
-    _UNIFI_MAP = {
-        # MX appliances -> UniFi Dream Machine / Cloud Gateway
-        "MX68":   ("UDM SE",          1_299,  649),
-        "MX75":   ("UCG-Ultra",        599,   299),
-        "MX85":   ("UDM Pro Max",    1_999,  899),
-        "MX95":   ("UDM Pro Max",    1_999,  899),
-        "MX105":  ("UDM Pro SE",     1_499,  699),
-        "MX250":  ("UCG-Enterprise", 3_999, 1_799),
-        "MX450":  ("UCG-Enterprise", 3_999, 1_799),
-        # MS switches -> UniFi USW Pro / Aggregation
-        "MS120":  ("USW Lite 16 PoE",  349,   179),
-        "MS125":  ("USW Pro 24 PoE",   849,   549),
-        "MS210":  ("USW Pro 24",       649,   399),
-        "MS220":  ("USW Pro 24",       649,   399),
-        "MS225":  ("USW Pro 24 PoE",   849,   549),
-        "MS250":  ("USW Pro 48 PoE", 1_299,   799),
-        "MS320":  ("USW Pro Aggregation", 999, 699),
-        "MS350":  ("USW Enterprise 24 PoE", 1_299, 899),
-        "MS390":  ("USW Enterprise 48 PoE", 1_799, 1_199),
-        "MS410":  ("USW Aggregation",  799,   499),
-        "MS420":  ("USW Aggregation",  799,   499),
-        "MS425":  ("USW Pro Aggregation", 999, 699),
-        "MS450":  ("USW Pro Aggregation", 999, 699),
-        # MR access points -> UniFi U6 / U7 series
-        "MR18":   ("U6 Lite",        199,   109),
-        "MR20":   ("U6 Lite",        199,   109),
-        "MR28":   ("U6 Mesh",        199,   129),
-        "MR30":   ("U6 LR",          299,   169),
-        "MR33":   ("U6 LR",          299,   169),
-        "MR36":   ("U6 Pro",         349,   189),
-        "MR42":   ("U6 Pro",         349,   189),
-        "MR44":   ("U7 Pro",         499,   299),
-        "MR46":   ("U7 Pro",         499,   299),
-        "MR46E":  ("U7 Pro Max",     699,   449),
-        "MR52":   ("U7 Pro Max",     699,   449),
-        "MR55":   ("U7 Pro Max",     699,   449),
-        "MR56":   ("U7 Pro Max",     699,   449),
-        "MR57":   ("U7 Pro Max",     699,   449),
-        "MR70":   ("U6 Mesh",        199,   129),
-        "MR74":   ("U6 Mesh Pro",    299,   179),
-        "MR76":   ("U7 Outdoor",     499,   299),
-        "MR84":   ("U7 Pro Max",     699,   449),
-        "MR86":   ("U7 Outdoor",     499,   299),
-    }
+    # Equivalent mappings are maintained in reporting/reference/pricing_reference.json.
+    # Org-local pricing.json still wins, because reseller and E-rate pricing varies by client.
+    _UNIFI_MAP = pricing_payload.get("unifi_equivalents") if isinstance(pricing_payload, dict) else {}
+    _PRICE_MODELS = pricing_payload.get("models") if isinstance(pricing_payload, dict) else {}
+    _PRICE_PRODUCTS = pricing_payload.get("products") if isinstance(pricing_payload, dict) else {}
+    _PRICE_META = pricing_payload.get("meta") if isinstance(pricing_payload, dict) else {}
+    _PRICE_UPDATED = str((_PRICE_META or {}).get("updated") or REPORT_VERSION)
+    _PRICE_CURRENCY = str((_PRICE_META or {}).get("currency") or "USD")
+
+    def _match_prefix(model: str, mapping: Dict[str, Any]) -> str | None:
+        text = str(model or "").upper()
+        return next((key for key in sorted(mapping, key=len, reverse=True) if text.startswith(str(key).upper())), None)
+
+    def _price_model_data(model: str) -> Dict[str, Any]:
+        if not isinstance(_PRICE_MODELS, dict):
+            return {}
+        exact = _PRICE_MODELS.get(model)
+        prefix_key = _match_prefix(model, _PRICE_MODELS)
+        data = exact if isinstance(exact, dict) else _PRICE_MODELS.get(prefix_key or "")
+        if not isinstance(data, dict):
+            return {}
+        return data
+
+    def _unit_price(model: str, field: str) -> int | float | None:
+        data = _price_model_data(model)
+        if not data:
+            return None
+        value = data.get(field)
+        return value if isinstance(value, (int, float)) else None
+
+    def _money(value: int | float | None) -> str:
+        if not isinstance(value, (int, float)):
+            return "Pricing needed"
+        return f"${value:,.0f}" if float(value).is_integer() else f"${value:,.2f}"
+
+    def _is_number(value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    def _price_confidence_badge(label: str) -> str:
+        normalized = str(label or "Reference").strip()
+        css = "badge-info"
+        if normalized.lower().startswith("used"):
+            css = "badge-warn"
+        elif normalized.lower().startswith("quote"):
+            css = "badge-fail"
+        elif normalized.lower().startswith("client"):
+            css = "badge-ok"
+        return f'<span class="badge {css}">{_he(normalized)}</span>'
+
+    def _product(product_key: str | None) -> Dict[str, Any]:
+        if not product_key or not isinstance(_PRICE_PRODUCTS, dict):
+            return {}
+        data = _PRICE_PRODUCTS.get(product_key)
+        return data if isinstance(data, dict) else {}
+
+    def _entry_product_key(entry: Any) -> str | None:
+        if isinstance(entry, dict):
+            value = entry.get("product_key") or entry.get("sku")
+            return str(value) if value else None
+        return None
+
+    def _entry_label(entry: Any, product: Dict[str, Any]) -> str:
+        if isinstance(entry, dict):
+            for key in ("name", "label", "equivalent"):
+                if entry.get(key):
+                    return str(entry[key])
+        if product:
+            return str(product.get("name") or product.get("sku") or "UniFi equivalent")
+        return str(entry or "UniFi equivalent")
+
+    def _product_unit_cost(product: Dict[str, Any], fallback: int | float | None = None) -> int | float | None:
+        value = product.get("unit_cost") if isinstance(product, dict) else None
+        return value if isinstance(value, (int, float)) else fallback
+
+    def _product_care_cost(product: Dict[str, Any]) -> int | None:
+        value = product.get("ui_care_5yr_unit_cost") if isinstance(product, dict) else None
+        return int(value) if isinstance(value, (int, float)) else None
+
+    def _product_cyber_cost(product: Dict[str, Any]) -> int | None:
+        value = product.get("cybersecure_annual_unit_cost") if isinstance(product, dict) else None
+        return int(value) if isinstance(value, (int, float)) else None
+
+    def _product_source(product: Dict[str, Any]) -> str:
+        source = str(product.get("source_url") or "").strip() if isinstance(product, dict) else ""
+        label = str(product.get("source_label") or "").strip() if isinstance(product, dict) else ""
+        if not source:
+            return _he(label or "Reference")
+        return f'<a href="{_he(source)}">{_he(label or "Ubiquiti Store")}</a>'
+
+    def _product_price_confidence(product: Dict[str, Any]) -> str:
+        if not isinstance(product, dict):
+            return "Reference"
+        explicit = str(product.get("pricing_confidence") or "").strip()
+        if explicit:
+            return explicit
+        if str(product.get("category") or "") == "meraki_used":
+            return "Used-market"
+        if str(product.get("vendor") or "").lower() == "ubiquiti":
+            return "Public MSRP"
+        return "Reference"
+
+    def _meraki_price_source(model: str) -> str:
+        data = _price_model_data(model)
+        source = str(data.get("meraki_unit_source") or "").strip() if data else ""
+        return source or "Quote needed"
+
+    def _meraki_price_confidence(model: str) -> str:
+        source = _meraki_price_source(model).lower()
+        if "networktigers" in source or "used" in source:
+            return "Used-market"
+        if source == "quote needed":
+            return "Quote needed"
+        return "Client quote"
+
+    def _model_counts_for_refresh() -> List[Dict[str, Any]]:
+        rows: Dict[str, Dict[str, Any]] = {}
+        source_devices = devices_avail if isinstance(devices_avail, list) and devices_avail else inventory_devices
+        production_statuses = {"online", "alerting"}
+        saw_model = False
+        for device in source_devices if isinstance(source_devices, list) else []:
+            if not isinstance(device, dict):
+                continue
+            model = str(device.get("model") or device.get("sku") or "").strip()
+            if not model:
+                continue
+            saw_model = True
+            status = str(device.get("status") or "unknown").strip().lower()
+            row = rows.setdefault(
+                model,
+                {"model": model, "inventory_qty": 0, "quoted_qty": 0, "excluded_qty": 0, "excluded_statuses": {}},
+            )
+            row["inventory_qty"] += 1
+            if status in production_statuses:
+                row["quoted_qty"] += 1
+            else:
+                row["excluded_qty"] += 1
+                excluded = row["excluded_statuses"]
+                excluded[status or "unknown"] = excluded.get(status or "unknown", 0) + 1
+        if not saw_model:
+            for model, count in top_models:
+                try:
+                    qty = int(count)
+                except (TypeError, ValueError):
+                    continue
+                rows[str(model)] = {
+                    "model": str(model),
+                    "inventory_qty": qty,
+                    "quoted_qty": qty,
+                    "excluded_qty": 0,
+                    "excluded_statuses": {},
+                }
+        return sorted(rows.values(), key=lambda item: (-int(item["quoted_qty"]), str(item["model"])))
+
+    def _excluded_status_text(row: Dict[str, Any]) -> str:
+        statuses = row.get("excluded_statuses")
+        if not isinstance(statuses, dict) or not statuses:
+            return "—"
+        return ", ".join(f"{_he(k)}: {v}" for k, v in sorted(statuses.items()))
+
+    def _connected_sfp_summary() -> Tuple[int, int, int]:
+        total_sfp = 0
+        connected_sfp = 0
+        uplink_sfp = 0
+        raw = switch_port_statuses_by_switch if isinstance(switch_port_statuses_by_switch, dict) else {}
+        for ports in raw.values():
+            if not isinstance(ports, list):
+                continue
+            for port in ports:
+                if not isinstance(port, dict):
+                    continue
+                port_id = str(port.get("portId") or "")
+                if not _is_sfp_like_port(port_id):
+                    continue
+                total_sfp += 1
+                if str(port.get("status") or "").lower() == "connected":
+                    connected_sfp += 1
+                if port.get("isUplink"):
+                    uplink_sfp += 1
+        return total_sfp, connected_sfp, uplink_sfp
 
     _unifi_rows = ""
     _meraki_total = 0
-    _unifi_total  = 0
-    _eol_swap_meraki = 0
-    _eol_swap_unifi  = 0
+    _unifi_total = 0
+    _unifi_care_total = 0
+    _unifi_cyber_annual_total = 0
+    _priced_rows = 0
+    _unifi_priced_rows = 0
+    _mapped_rows = 0
+    _mapped_quoted_qty = 0
+    _eol_models_mapped: List[str] = []
+    _catalog_models = _model_counts_for_refresh()
+    _inventory_refresh_qty = sum(int(row.get("inventory_qty") or 0) for row in _catalog_models)
+    _quoted_refresh_qty = sum(int(row.get("quoted_qty") or 0) for row in _catalog_models)
+    _excluded_refresh_qty = sum(int(row.get("excluded_qty") or 0) for row in _catalog_models)
+    _excluded_status_totals: Dict[str, int] = {}
+    for _row in _catalog_models:
+        for _status, _status_count in (_row.get("excluded_statuses") or {}).items():
+            _excluded_status_totals[str(_status)] = _excluded_status_totals.get(str(_status), 0) + int(_status_count or 0)
+    _excluded_status_summary = ", ".join(
+        f"{_he(status)}: {count}" for status, count in sorted(_excluded_status_totals.items())
+    ) or "none"
+    _category_totals: Dict[str, Dict[str, int]] = {}
 
-    for _model, _count in top_models:
-        _mprefix = str(_model).upper()
-        _map_key = next(
-            (k for k in _UNIFI_MAP if _mprefix.startswith(k)),
-            None,
-        )
+    for _row in _catalog_models:
+        _model = str(_row.get("model") or "")
+        _count = int(_row.get("quoted_qty") or 0)
+        _inventory_count = int(_row.get("inventory_qty") or 0)
+        _excluded_count = int(_row.get("excluded_qty") or 0)
+        if _count <= 0:
+            continue
+        _model_text = str(_model)
+        _mprefix = _model_text.upper()
+        _map_key = _match_prefix(_model_text, _UNIFI_MAP)
         if not _map_key:
             continue
-        _unifi_name, _meraki_price, _unifi_price = _UNIFI_MAP[_map_key]
+        _mapped_rows += 1
+        _mapped_quoted_qty += _count
+        _entry = _UNIFI_MAP[_map_key]
+        _product_key = _entry_product_key(_entry)
+        _product_data = _product(_product_key)
+        _product_category = str(_product_data.get("category") or "uncategorized")
+        _unifi_name = _entry_label(_entry, _product_data)
+        _rationale = str(_entry.get("rationale") or "") if isinstance(_entry, dict) else ""
         _is_eol = any(_mprefix.startswith(p) for p in _EOL_PREFIXES)
-        _row_mx  = _meraki_price * _count
-        _row_ux  = _unifi_price  * _count
-        _meraki_total += _row_mx
-        _unifi_total  += _row_ux
+        _meraki_price = _unit_price(_model_text, "meraki_unit_cost")
+        _meraki_source = _meraki_price_source(_model_text) if _is_number(_meraki_price) else "Quote needed"
+        _meraki_confidence = _meraki_price_confidence(_model_text)
+        _unifi_price = _product_unit_cost(_product_data, _unit_price(_model_text, "unifi_unit_cost"))
+        _unifi_confidence = _product_price_confidence(_product_data) if _is_number(_unifi_price) else "Quote needed"
+        _ui_care_price = _product_care_cost(_product_data)
+        _cyber_annual = _product_cyber_cost(_product_data)
+        _row_mx = _meraki_price * _count if _is_number(_meraki_price) else None
+        _row_ux = _unifi_price * _count if _is_number(_unifi_price) else None
+        _row_care = _ui_care_price * _count if _is_number(_ui_care_price) else None
+        _row_cyber = _cyber_annual * _count if _is_number(_cyber_annual) else None
+        if _is_number(_row_mx):
+            _meraki_total += _row_mx
+        if _is_number(_row_ux):
+            _unifi_total += _row_ux
+            _unifi_priced_rows += 1
+        if _is_number(_row_care):
+            _unifi_care_total += _row_care
+        if _is_number(_row_cyber):
+            _unifi_cyber_annual_total += _row_cyber
+        _bucket = _category_totals.setdefault(_product_category, {"hardware": 0, "care": 0, "cyber": 0, "qty": 0})
+        _bucket["qty"] += _count
+        if _is_number(_row_ux):
+            _bucket["hardware"] += _row_ux
+        if _is_number(_row_care):
+            _bucket["care"] += _row_care
+        if _is_number(_row_cyber):
+            _bucket["cyber"] += _row_cyber
+        if _is_number(_row_mx) and _is_number(_row_ux):
+            _priced_rows += 1
         if _is_eol:
-            _eol_swap_meraki += _row_mx
-            _eol_swap_unifi  += _row_ux
+            _eol_models_mapped.append(_model_text)
         _unifi_rows += (
             f"<tr>"
             f"<td>{_he(_model)}</td>"
+            f"<td>{_inventory_count}</td>"
             f"<td>{_count}</td>"
-            f"<td>{_he(_unifi_name)}</td>"
-            f"<td>${_meraki_price:,}</td>"
-            f"<td>${_unifi_price:,}</td>"
-            f"<td>${_row_mx:,}</td>"
-            f"<td>${_row_ux:,}</td>"
-            f'<td>{"⚠ EOL" if _is_eol else "—"}</td>'
+            f"<td>{_excluded_count}<br><span class=\"muted\">{_excluded_status_text(_row)}</span></td>"
+            f"<td>{_he(_unifi_name)}{f'<br><span class=\"muted\">{_he(_rationale)}</span>' if _rationale else ''}</td>"
+            f"<td>{_money(_meraki_price)}</td>"
+            f"<td><span class=\"muted\">{_he(_meraki_source)}</span><br>{_price_confidence_badge(_meraki_confidence)}</td>"
+            f"<td>{_money(_unifi_price)}<br>{_price_confidence_badge(_unifi_confidence)}</td>"
+            f"<td>{_money(_ui_care_price)}</td>"
+            f"<td>{_money(_row_mx)}</td>"
+            f"<td>{_money(_row_ux)}</td>"
+            f"<td>{_money(_row_care)}</td>"
+            f'<td>{"EOL" if _is_eol else "—"}</td>'
             f"</tr>"
         )
 
-    _savings = _meraki_total - _unifi_total
-    _savings_pct = round(100 * _savings / _meraki_total) if _meraki_total else 0
+    _savings = _meraki_total - _unifi_total if _priced_rows else None
+    _savings_pct = round(100 * _savings / _meraki_total) if _priced_rows and _meraki_total else None
+    _sfp_total, _connected_sfp, _uplink_sfp = _connected_sfp_summary()
+    _aggregation_rows = ""
+    _aggregation_total = 0
+    _aggregation_care_total = 0
+    if _connected_sfp >= 9:
+        _agg_key = "USW-Pro-Aggregation"
+        _agg_qty = max(1, math.ceil(_connected_sfp / 28))
+        _agg_reason = (
+            f"{_connected_sfp} connected SFP/module ports were observed. "
+            "Use a 32-port aggregation switch as a planning reference for a main closet/core design."
+        )
+    elif _connected_sfp > 0:
+        _agg_key = "USW-Aggregation"
+        _agg_qty = 1
+        _agg_reason = (
+            f"{_connected_sfp} connected SFP/module port(s) were observed. "
+            "An 8-port aggregation switch may be sufficient if the design stays small."
+        )
+    else:
+        _agg_key = ""
+        _agg_qty = 0
+        _agg_reason = "No connected SFP/module ports were observed in this backup."
+    if _agg_key:
+        _agg_product = _product(_agg_key)
+        _agg_unit = _product_unit_cost(_agg_product)
+        _agg_care = _product_care_cost(_agg_product)
+        _agg_total = _agg_unit * _agg_qty if _is_number(_agg_unit) else None
+        _agg_care_total = _agg_care * _agg_qty if _is_number(_agg_care) else None
+        if _is_number(_agg_total):
+            _aggregation_total += _agg_total
+            _category_totals.setdefault("aggregation", {"hardware": 0, "care": 0, "cyber": 0, "qty": 0})["hardware"] += _agg_total
+            _category_totals["aggregation"]["qty"] += _agg_qty
+        if _is_number(_agg_care_total):
+            _aggregation_care_total += _agg_care_total
+            _category_totals.setdefault("aggregation", {"hardware": 0, "care": 0, "cyber": 0, "qty": 0})["care"] += _agg_care_total
+        _aggregation_rows = (
+            "<tr>"
+            f"<td>{_he(_agg_product.get('name') or _agg_key)}</td>"
+            f"<td>{_agg_qty}</td>"
+            f"<td>{_money(_agg_unit)}</td>"
+            f"<td>{_money(_agg_care)}</td>"
+            f"<td>{_money(_agg_total)}</td>"
+            f"<td>{_money(_agg_care_total)}</td>"
+            f"<td>{_he(_agg_reason)}</td>"
+            "</tr>"
+        )
+
+    def _catalog_table(category: str, title: str) -> str:
+        rows = []
+        if not isinstance(_PRICE_PRODUCTS, dict):
+            return ""
+        for key, product in sorted(_PRICE_PRODUCTS.items(), key=lambda item: (str((item[1] or {}).get("category")), str((item[1] or {}).get("name")))):
+            if not isinstance(product, dict) or product.get("category") != category:
+                continue
+            care = _product_care_cost(product)
+            cyber = _product_cyber_cost(product)
+            adders = []
+            if isinstance(care, int):
+                adders.append(f"UI Care 5-year {_money(care)}")
+            if isinstance(cyber, int):
+                adders.append(f"CyberSecure annual {_money(cyber)}")
+            rows.append(
+                "<tr>"
+                f"<td>{_he(product.get('name') or key)}<br><code>{_he(product.get('sku') or key)}</code></td>"
+                f"<td>{_money(_product_unit_cost(product))}</td>"
+                f"<td>{_price_confidence_badge(_product_price_confidence(product))}</td>"
+                f"<td>{_he(' · '.join(adders) or '—')}</td>"
+                f"<td>{_he(product.get('description') or '')}</td>"
+                f"<td>{_product_source(product)}</td>"
+                "</tr>"
+            )
+        if not rows:
+            return ""
+        return f"""
+        <h4>{_he(title)}</h4>
+        <table class="data dense">
+          <thead><tr><th>Product</th><th>Unit</th><th>Confidence</th><th>Support / Services</th><th>Planning Notes</th><th>Source</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+        """
+
+    _reference_catalog_html = (
+        _catalog_table("meraki_used", "Cisco/Meraki Used-Market Reference")
+        + _catalog_table("access_point", "Access Point Reference")
+        + _catalog_table("switch", "Access Switch Reference")
+        + _catalog_table("aggregation", "Aggregation Reference")
+        + _catalog_table("gateway", "Gateway Reference")
+    )
+    _unifi_grand_total = _unifi_total + _aggregation_total
+    _unifi_grand_care_total = _unifi_care_total + _aggregation_care_total
+
+    def _phase_amount(*categories: str, field: str = "hardware") -> int:
+        return sum((_category_totals.get(category) or {}).get(field, 0) for category in categories)
+
+    _year1_hw = _phase_amount("access_point")
+    _year1_care = _phase_amount("access_point", field="care")
+    _year2_hw = _phase_amount("switch", "aggregation")
+    _year2_care = _phase_amount("switch", "aggregation", field="care")
+    _year3_hw = _phase_amount("gateway")
+    _year3_care = _phase_amount("gateway", field="care")
+    _year3_cyber = _phase_amount("gateway", field="cyber")
+    _cost_breakdown_rows = (
+        "<tr>"
+        "<td>Wireless AP hardware</td>"
+        f"<td>{_money(_year1_hw) if _year1_hw else '—'}</td>"
+        f"<td>{_price_confidence_badge('Public MSRP') if _year1_hw else _price_confidence_badge('Quote needed')}</td>"
+        "<td>Mapped active/alerting APs only; excludes dormant/offline APs until field validation.</td>"
+        "</tr>"
+        "<tr>"
+        "<td>Access switch hardware</td>"
+        f"<td>{_money(_phase_amount('switch')) if _phase_amount('switch') else '—'}</td>"
+        f"<td>{_price_confidence_badge('Public MSRP') if _phase_amount('switch') else _price_confidence_badge('Quote needed')}</td>"
+        "<td>Mapped active/alerting access switches; PoE and uplink design should be validated closet by closet.</td>"
+        "</tr>"
+        "<tr>"
+        "<td>Aggregation hardware</td>"
+        f"<td>{_money(_aggregation_total) if _aggregation_total else '—'}</td>"
+        f"<td>{_price_confidence_badge('Public MSRP') if _aggregation_total else _price_confidence_badge('Quote needed')}</td>"
+        "<td>Included only when connected SFP/module usage suggests a main closet aggregation candidate.</td>"
+        "</tr>"
+        "<tr>"
+        "<td>Gateway/security hardware</td>"
+        f"<td>{_money(_year3_hw) if _year3_hw else '—'}</td>"
+        f"<td>{_price_confidence_badge('Public MSRP') if _year3_hw else _price_confidence_badge('Quote needed')}</td>"
+        "<td>MX replacement is a planning placeholder until firewall, VPN, filtering, logging, and HA requirements are signed off.</td>"
+        "</tr>"
+        "<tr>"
+        "<td>Optional support/services add-ons</td>"
+        f"<td>{_money(_unifi_grand_care_total + _unifi_cyber_annual_total) if (_unifi_grand_care_total + _unifi_cyber_annual_total) else '—'}</td>"
+        f"<td>{_price_confidence_badge('Public MSRP') if (_unifi_grand_care_total + _unifi_cyber_annual_total) else _price_confidence_badge('Quote needed')}</td>"
+        "<td>UI Care and CyberSecure are shown separately from hardware so support choices stay explicit.</td>"
+        "</tr>"
+        "<tr>"
+        "<td>Not included</td>"
+        "<td>Pricing needed</td>"
+        f"<td>{_price_confidence_badge('Quote needed')}</td>"
+        "<td>Optics/transceivers, cabling, licensing renewal deltas, tax, freight, professional services, project contingency, and E-rate/reseller discounts.</td>"
+        "</tr>"
+    )
+    _three_year_rows = (
+        "<tr>"
+        "<td>Year 1</td><td>Wireless access refresh</td>"
+        f"<td>{_money(_year1_hw) if _year1_hw else '—'}</td>"
+        f"<td>{_money(_year1_care) if _year1_care else '—'}</td>"
+        "<td>Replace active APs first; leave dormant/offline APs out of the quote until validated.</td>"
+        "</tr>"
+        "<tr>"
+        "<td>Year 2</td><td>Access switching and aggregation</td>"
+        f"<td>{_money(_year2_hw) if _year2_hw else '—'}</td>"
+        f"<td>{_money(_year2_care) if _year2_care else '—'}</td>"
+        "<td>Move closets in controlled batches; include aggregation only when connected SFP/module use warrants it.</td>"
+        "</tr>"
+        "<tr>"
+        "<td>Year 3</td><td>Gateway/security migration and cleanup</td>"
+        f"<td>{_money(_year3_hw) if _year3_hw else '—'}</td>"
+        f"<td>{_money(_year3_care + _year3_cyber) if (_year3_care + _year3_cyber) else '—'}</td>"
+        "<td>Validate firewall, VPN, content filtering, logging, and security subscriptions before replacing MX edge services.</td>"
+        "</tr>"
+    )
 
     if _unifi_rows:
+        _footer_meraki = _money(_meraki_total) if _priced_rows else "Pricing needed"
+        _footer_unifi = _money(_unifi_total) if _unifi_priced_rows else "Pricing needed"
+        _footer_delta = f"-{_savings_pct}%" if isinstance(_savings_pct, int) else "Pricing needed"
         _unifi_hw_table = f"""
         <table class="data dense">
           <thead>
             <tr>
-              <th>Meraki Model</th><th>Qty</th><th>UniFi Equivalent</th>
-              <th>Meraki Unit (est.)</th><th>UniFi Unit (est.)</th>
-              <th>Meraki Total</th><th>UniFi Total</th><th>Flag</th>
+              <th>Meraki Model</th><th>Inventory Qty</th><th>Quoted Qty</th><th>Excluded</th><th>UniFi Equivalent</th>
+              <th>Meraki Unit</th><th>Meraki Source</th><th>UniFi Unit</th><th>UI Care / Unit</th>
+              <th>Meraki Total</th><th>UniFi Total</th><th>UI Care Total</th><th>Flag</th>
             </tr>
           </thead>
           <tbody>{_unifi_rows}</tbody>
           <tfoot>
             <tr>
-              <td colspan="5"><strong>Hardware totals (mapped devices only)</strong></td>
-              <td><strong>${_meraki_total:,}</strong></td>
-              <td><strong>${_unifi_total:,}</strong></td>
-              <td><strong>−{_savings_pct}%</strong></td>
+              <td colspan="9"><strong>Hardware totals (active/alerting mapped rows only)</strong></td>
+              <td><strong>{_footer_meraki}</strong></td>
+              <td><strong>{_footer_unifi}</strong></td>
+              <td><strong>{_money(_unifi_care_total) if _unifi_care_total else "—"}</strong></td>
+              <td><strong>{_footer_delta}</strong></td>
             </tr>
           </tfoot>
         </table>"""
@@ -2665,28 +3863,91 @@ def build_org_report(
     unifi_html = f"""
     <section id="unifi-comparison" class="report-section">
       <h2>17. UniFi Comparison &amp; Refresh Planning</h2>
-      <p>This section provides a heuristic cost comparison between the current Meraki
-         environment and a notional UniFi replacement. It is a planning estimate only — not
-         a procurement quote or a recommendation to replace. Prices are approximate 2025–2026
-         street/MSRP estimates and will vary by reseller, volume, and configuration.
-         <strong>Always validate with current partner pricing before presenting externally.</strong></p>
+      <p>This section maps current Meraki model families to UniFi replacement classes and
+         builds a first-pass migration bill of materials. It is a planning reference only,
+         not a procurement quote or a recommendation to replace. Built-in UniFi prices use
+         the maintained <code>reporting/reference/pricing_reference.json</code> catalog.
+         Cisco/Meraki prices are shown only when an explicit reference exists; NetworkTigers
+         entries are labeled <strong>NetworkTigers (used)</strong> because they are used-market
+         hardware references and exclude licensing, warranty, support, tax, freight, optics,
+         and implementation;
+         org-local <code>pricing.json</code> overrides should be used for reseller, E-rate,
+         or client-approved pricing.</p>
 
       <div class="summary-card">
         <div class="summary-title">Planning Summary</div>
         <div class="summary-body">
-          Mapped devices: {len([r for r in top_models if any(str(r[0]).upper().startswith(k) for k in _UNIFI_MAP)])} model type(s)
-          · Meraki hardware estimate: <strong>${_meraki_total:,}</strong>
-          · UniFi hardware estimate: <strong>${_unifi_total:,}</strong>
-          · Estimated hardware delta: <strong>${_savings:,} ({_savings_pct}% lower)</strong>
-          {f"· EOL devices (hardware only): Meraki <strong>${_eol_swap_meraki:,}</strong> vs UniFi <strong>${_eol_swap_unifi:,}</strong>" if _eol_swap_meraki else ""}
+          Mapped model families: <strong>{_mapped_rows}</strong>
+          · Inventory devices considered: <strong>{_inventory_refresh_qty}</strong>
+          · Active/alerting devices found: <strong>{_quoted_refresh_qty}</strong>
+          · Quoted mapped devices: <strong>{_mapped_quoted_qty}</strong>
+          · Excluded dormant/offline/unknown devices: <strong>{_excluded_refresh_qty}</strong>
+          · Excluded status mix: <strong>{_excluded_status_summary}</strong>
+          · UniFi priced rows: <strong>{_unifi_priced_rows}</strong>
+          · Reference updated: <strong>{_he(_PRICE_UPDATED)}</strong>
+          · Meraki hardware total: <strong>{_money(_meraki_total) if _priced_rows else "Pricing needed"}</strong>
+          · UniFi mapped hardware total: <strong>{_money(_unifi_total) if _unifi_priced_rows else "Pricing needed"}</strong>
+          · Optional aggregation hardware: <strong>{_money(_aggregation_total) if _aggregation_total else "—"}</strong>
+          · UniFi planning total: <strong>{_money(_unifi_grand_total) if _unifi_grand_total else "Pricing needed"}</strong>
+          · UI Care 5-year add-on: <strong>{_money(_unifi_grand_care_total) if _unifi_grand_care_total else "—"}</strong>
+          · CyberSecure annual add-on: <strong>{_money(_unifi_cyber_annual_total) if _unifi_cyber_annual_total else "—"}</strong>
+          · Hardware delta: <strong>{_money(_savings) + f" ({_savings_pct}% lower)" if _is_number(_savings) and isinstance(_savings_pct, int) else "Pricing needed"}</strong>
+          {f"· EOL mapped families: <strong>{_he(', '.join(_eol_models_mapped[:6]))}</strong>" if _eol_models_mapped else ""}
           <br><br>
-          <em>Note: Meraki hardware prices above do not include annual licensing (typically
-          $X–$Y per device per year for Enterprise tier). UniFi has no recurring per-device
-          subscription fees beyond optional UniFi OS Cloud (optional, ~$29/mo for remote management).</em>
+          <em>Currency: {_he(_PRICE_CURRENCY)}. Meraki pricing remains quote-dependent unless supplied
+          by org-local <code>pricing.json</code>. Validate all pricing, support terms, tax, freight,
+          optics, and professional services before using externally.</em>
         </div>
       </div>
 
       {_unifi_hw_table}
+
+      <h3>Migration Cost Breakdown</h3>
+      <table class="data dense">
+        <thead>
+          <tr><th>Cost Area</th><th>Planning Amount</th><th>Confidence</th><th>Notes</th></tr>
+        </thead>
+        <tbody>{_cost_breakdown_rows}</tbody>
+      </table>
+
+      <h3>Three-Year Migration Budget View</h3>
+      <table class="data dense">
+        <thead>
+          <tr><th>Phase</th><th>Scope</th><th>Hardware</th><th>Support / Services Add-ons</th><th>Planning Notes</th></tr>
+        </thead>
+        <tbody>{_three_year_rows}</tbody>
+        <tfoot>
+          <tr>
+            <td colspan="2"><strong>Three-year planning total</strong></td>
+            <td><strong>{_money(_unifi_grand_total) if _unifi_grand_total else "Pricing needed"}</strong></td>
+            <td><strong>{_money(_unifi_grand_care_total + _unifi_cyber_annual_total) if (_unifi_grand_care_total + _unifi_cyber_annual_total) else "—"}</strong></td>
+            <td><strong>{_money(_unifi_grand_total + _unifi_grand_care_total + _unifi_cyber_annual_total) if _unifi_grand_total else "Pricing needed"}</strong></td>
+          </tr>
+        </tfoot>
+      </table>
+
+      <h3>Aggregation / Main Closet Reference</h3>
+      <div class="summary-card">
+        <div class="summary-title">Observed SFP Footprint</div>
+        <div class="summary-body">
+          SFP/module ports observed: <strong>{_sfp_total}</strong>
+          · Connected SFP/module ports: <strong>{_connected_sfp}</strong>
+          · Uplink SFP/module ports: <strong>{_uplink_sfp}</strong>
+          <br>
+          {_he(_agg_reason)}
+        </div>
+      </div>
+      <table class="data dense">
+        <thead>
+          <tr><th>Candidate</th><th>Qty</th><th>Unit</th><th>UI Care / Unit</th><th>Total</th><th>UI Care Total</th><th>Reason</th></tr>
+        </thead>
+        <tbody>{_aggregation_rows or '<tr><td colspan="7" class="empty-state">No aggregation switch add-on suggested from observed SFP usage.</td></tr>'}</tbody>
+      </table>
+
+      <h3>Maintained UniFi Public Reference Catalog</h3>
+      <p>The catalog below is kept in source control so migration calculations are repeatable
+         and auditable. It should be refreshed before client-facing procurement decisions.</p>
+      {_reference_catalog_html}
 
       <h3>Licensing &amp; Support Model Comparison</h3>
       <table class="data">
@@ -2698,8 +3959,8 @@ def build_org_report(
             <td><strong>Licensing model</strong></td>
             <td>Mandatory annual per-device license (co-term or Enterprise Agreement).
                 Devices enter limited mode without active license.</td>
-            <td>No per-device license fees. Hardware purchased once. Optional cloud
-                management subscription (~$29/mo).</td>
+            <td>No per-device network-device license fees. Hardware purchased once.
+                Optional cloud services should be priced from current Ubiquiti terms.</td>
           </tr>
           <tr>
             <td><strong>Management platform</strong></td>
@@ -2763,11 +4024,65 @@ def build_org_report(
     </section>
     """
 
+    vlan_reference_rows = [
+        ("1", "Native / Management", "10.1.0.0/16", "Switch, MX, AP management; IT jump hosts", "IT-only management access; no user assignment"),
+        ("10", "Servers & Controllers", "10.10.0.0/16", "SIS, NVR, file shares, local controllers", "Allow approved staff/admin sources to specific services only"),
+        ("20", "Facilities / IoT", "10.20.0.0/16", "HVAC, PA, alarms, signage", "Outbound vendor/NTP/DNS only; block inbound and lateral movement"),
+        ("30", "Security Devices", "10.30.0.0/16", "Cameras and door access panels", "Permit NVR/control-plane flows; block general internet and user VLAN access"),
+        ("100", "Admin Staff", "10.100.0.0/16", "Admin SSID and office workstations", "Least-privilege LAN access; deny student and guest networks"),
+        ("110-180", "Teacher / Classroom Blocks", "10.110.0.0/16 - 10.180.0.0/16", "Teacher devices and classroom carts by building or role", "Local print/cast/mDNS where required; restrict server access to approved applications"),
+        ("200", "Voice / Collaboration", "10.200.0.0/16", "VoIP phones, PA speakers, room systems", "SIP/RTP to call control only; preserve EF/voice QoS"),
+        ("250", "Student / BYOD", "10.250.0.0/16", "Student SSID and unmanaged student devices", "Internet-only with content filtering; no internal LAN access"),
+        ("254", "Guest / Visitor", "10.254.0.0/16", "Guest SSID and captive portal users", "Internet-only; captive portal and rate limits"),
+        ("400", "Events / Special Use", "10.400.0.0/16", "Athletics, auditorium AV, temporary wireless", "Time-bound policy; block production VLANs except explicitly approved multicast"),
+    ]
+    vlan_reference_html = """
+    <section id="vlan-reference" class="report-section">
+      <h2>18. K-12 VLAN Segmentation Reference</h2>
+      <p>This supplemental design is a reference blueprint for school network segmentation. It should be validated against the current Meraki Dashboard configuration, firewall policy, identity provider, print/casting needs, and building-by-building operational requirements before implementation.</p>
+      <table class="data dense">
+        <thead>
+          <tr><th>VLAN</th><th>Name / Purpose</th><th>Reference Subnet</th><th>Typical Devices</th><th>Policy Intent</th></tr>
+        </thead>
+        <tbody>
+    """ + "".join(
+        "<tr>"
+        f"<td>{_he(vlan)}</td>"
+        f"<td>{_he(name)}</td>"
+        f"<td><code>{_he(subnet)}</code></td>"
+        f"<td>{_he(devices)}</td>"
+        f"<td>{_he(policy)}</td>"
+        "</tr>"
+        for vlan, name, subnet, devices, policy in vlan_reference_rows
+    ) + """
+        </tbody>
+      </table>
+      <div class="summary-card">
+        <div class="summary-title">Dashboard Implementation Notes</div>
+        <div class="summary-body">
+          Map SSIDs to tagged VLANs, keep management unassigned to users, apply deny-by-default inter-VLAN firewall rules, and use group policies for guest, student, IoT, and event exceptions. Treat this as target architecture, not evidence of current compliance.
+        </div>
+      </div>
+    </section>
+    """
+
+    end_report_html = f"""
+    <section class="report-section end-report">
+      <div>
+        <h2>End of Report</h2>
+        <p>TM Meraki Baseline</p>
+        <p>Release {REPORT_VERSION} &nbsp;&bull;&nbsp; Generated {_report_ts}</p>
+        <p>{_he(org_name)}</p>
+      </div>
+    </section>
+    """
+
     full_body = (
         cover_html
         + _schema_banner
         + toc_html
         + exec_html
+        + report_guide_html
         + network_overview_html
         + topology_html
         + traffic_html
@@ -2782,30 +4097,24 @@ def build_org_report(
         + wan_capacity_html
         + ap_interference_html
         + client_analysis_html
-        + switch_deep_dive_html
+        + switch_main_report_html
         + unifi_html
+        + vlan_reference_html
+        + end_report_html
     )
-    exec_body = cover_html + _schema_banner + exec_html
+    exec_body = cover_html + _schema_banner + exec_html + report_guide_html + end_report_html
     backup_body = (
         cover_html
         + _schema_banner
         + toc_backup_html
-        + network_overview_html
-        + topology_html
-        + traffic_html
-        + issues_html
-        + poe_html
-        + security_html
-        + recommendations_html
-        + cis8_html
-        + licensing_html
+        + backup_intro_html
         + config_coverage_html
-        + budget_forecast_html
-        + wan_capacity_html
-        + ap_interference_html
+        + network_overview_html
+        + security_html
+        + licensing_html
         + client_analysis_html
         + switch_deep_dive_html
-        + unifi_html
+        + end_report_html
     )
 
     if report_kind == "exec":
@@ -2819,7 +4128,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-dir", help="Generate reports from a single backup/fixture directory.")
     parser.add_argument("--org-name", help="Display name for --source-dir reports.")
     parser.add_argument("--output-dir", help="Directory for generated reports when using --source-dir.")
+    parser.add_argument(
+        "--reports-dir",
+        help=(
+            "Write multi-org report output under this reports directory instead of inside backups/. "
+            "Each org gets reports/<org>/<timestamp>/ plus reports/latest/<org>/ aliases."
+        ),
+    )
+    parser.add_argument(
+        "--pdf-only",
+        action="store_true",
+        help="Remove generated HTML artifacts after PDF rendering succeeds.",
+    )
+    parser.add_argument(
+        "--fixed-now",
+        type=_validate_fixed_now,
+        help="Use a fixed ISO timestamp for deterministic report filenames and visible report dates.",
+    )
     args = parser.parse_args(argv)
+
+    if args.fixed_now:
+        os.environ[FIXED_NOW_ENV] = args.fixed_now
 
     if args.source_dir:
         source_dir = os.path.abspath(args.source_dir)
@@ -2828,7 +4157,20 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         org_name = args.org_name or _read_org_name(source_dir)
         output_dir = os.path.abspath(args.output_dir) if args.output_dir else None
-        generated = generate_org_reports(source_dir, org_name, output_dir=output_dir)
+        latest_dir = None
+        if args.reports_dir and not output_dir:
+            reports_dir = os.path.abspath(args.reports_dir)
+            run_ts = _current_run_ts()
+            output_dir = _report_run_output_dir(reports_dir, org_name, run_ts)
+            latest_dir = _report_latest_output_dir(reports_dir, org_name)
+        generated = generate_org_reports(
+            source_dir,
+            org_name,
+            output_dir=output_dir,
+            latest_dir=latest_dir,
+            keep_html=not args.pdf_only,
+            run_ts=run_ts if args.reports_dir and not args.output_dir else None,
+        )
         log.info("Done — %d report(s) generated.", generated)
         return 0
 
@@ -2840,7 +4182,22 @@ def main(argv: list[str] | None = None) -> int:
 
     generated = 0
     for org_dir in org_dirs:
-        generated += generate_org_reports(org_dir, _read_org_name(org_dir))
+        org_name = _read_org_name(org_dir)
+        output_dir = None
+        latest_dir = None
+        if args.reports_dir:
+            reports_dir = os.path.abspath(args.reports_dir)
+            run_ts = _current_run_ts()
+            output_dir = _report_run_output_dir(reports_dir, org_name, run_ts)
+            latest_dir = _report_latest_output_dir(reports_dir, org_name)
+        generated += generate_org_reports(
+            org_dir,
+            org_name,
+            output_dir=output_dir,
+            latest_dir=latest_dir,
+            keep_html=not args.pdf_only,
+            run_ts=run_ts if args.reports_dir else None,
+        )
 
     log.info("Done — %d report(s) generated.", generated)
     return 0

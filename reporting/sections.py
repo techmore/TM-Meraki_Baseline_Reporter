@@ -25,6 +25,71 @@ from .common import (
 )
 from .topology import _build_topology_facts
 
+
+def _is_low_speed_link(speed: Any) -> bool:
+    text = str(speed or "").strip().lower()
+    return text.startswith("10 mb") or text.startswith("100 mb")
+
+
+def _meaningful_port_messages(messages: Any) -> List[str]:
+    if isinstance(messages, str):
+        messages = [messages]
+    if not isinstance(messages, list):
+        return []
+    benign_fragments = (
+        "disconnected",
+        "not connected",
+        "no link",
+        "link down",
+        "down",
+    )
+    result = []
+    for message in messages:
+        text = str(message or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if any(fragment in lowered for fragment in benign_fragments):
+            continue
+        result.append(text)
+    return result
+
+
+def _model_cell(model: Any) -> str:
+    text = str(model or "").strip()
+    return f"<code>{_he(text)}</code>" if text else "Unknown model"
+
+
+def _compact_text(value: Any, max_len: int = 18) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= max_len:
+        return text
+    return text[: max(1, max_len - 1)].rstrip() + "…"
+
+
+def _compact_vlan_text(value: Any) -> str:
+    text = str(value or "—").strip()
+    replacements = {
+        "Trunk": "T",
+        "Access": "A",
+        "native": "n",
+        "allowed": "allow",
+        "VLAN": "V",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return _compact_text(text, 24)
+
+
+def _compact_neighbor_text(port: Dict[str, Any], serial_to_dev: Dict[str, Dict[str, Any]]) -> str:
+    text = _describe_port_neighbor(port, serial_to_dev)
+    text = text.replace("downstream client(s)", "clients")
+    text = text.replace("No neighbor data", "—")
+    return _compact_text(text, 26) or "—"
+
+
 def _render_switch_port_grid(
     ports: List[Dict[str, Any]],
     port_configs: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -40,9 +105,7 @@ def _render_switch_port_grid(
         port_id = str(port.get("portId") or "?")
         status = str(port.get("status") or "").lower()
         speed = str(port.get("speed") or "")
-        errors = port.get("errors") or []
-        if isinstance(errors, str):
-            errors = [errors]
+        errors = _meaningful_port_messages(port.get("errors") or [])
         role = _port_role_label(port, port_configs.get(port_id), serial_to_dev)
         if errors:
             cls = "issue"
@@ -50,7 +113,7 @@ def _render_switch_port_grid(
             cls = "uplink"
         elif "disconnected" in status or "not connected" in status or not status:
             cls = "down"
-        elif speed.startswith("100 ") or speed.startswith("10 "):
+        elif _is_low_speed_link(speed):
             cls = "warn"
         elif (port.get("poe") or {}).get("isAllocated"):
             cls = "poe"
@@ -109,7 +172,9 @@ def _build_switch_detail_section(
     switch_port_configs_by_switch: Dict[str, Any],
     poe_by_serial: Dict[str, Dict[str, Any]],
     port_issues_by_switch: Dict[str, List[Dict[str, Any]]],
+    hardware_catalog: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, List[Tuple[str, str]]]:
+    catalog_models = (hardware_catalog or {}).get("models") or {}
     switch_entries: List[Tuple[str, str, str, str]] = []
     for net_data in sorted(devices_by_network.values(), key=lambda item: item["name"]):
         for dev in sorted(
@@ -146,12 +211,66 @@ def _build_switch_detail_section(
     serial_to_dev, status_by_switch, parent_of, children_of, edge_counts = _build_topology_facts(
         all_devices, lldp_cdp, switch_port_statuses_by_switch
     )
+    switches_with_port_status = sum(
+        1 for _, serial, _, _ in switch_entries
+        if status_by_switch.get(serial)
+    )
+    switches_with_lldp = sum(
+        1 for _, serial, _, _ in switch_entries
+        if isinstance(lldp_cdp, dict) and lldp_cdp.get(serial)
+    )
+    identity_rows = []
+    for site_name, serial, switch_name, model in switch_entries:
+        switch = serial_to_dev.get(serial, {})
+        ports = status_by_switch.get(serial, {})
+        port_count = len(ports)
+        connected_ports = sum(
+            1 for port in ports.values()
+            if str(port.get("status") or "").lower() == "connected"
+        )
+        poe_data = poe_by_serial.get(serial, {})
+        observed_watts = float(poe_data.get("avgWatts", 0) or 0)
+        reference = catalog_models.get(model) or {}
+        budget = reference.get("poeBudgetWatts")
+        headroom = "Unknown"
+        if isinstance(budget, (int, float)):
+            headroom = f"{max(0.0, float(budget) - observed_watts):.1f} W"
+        identity_rows.append(
+            "<tr>"
+            f"<td>{_he(site_name)}</td>"
+            f"<td>{_he(switch_name)}<br><code>{_he(serial)}</code></td>"
+            f"<td>{_he(model or '—')}</td>"
+            f"<td>{_he(str(switch.get('status') or 'unknown'))}</td>"
+            f"<td>{connected_ports} / {port_count if port_count else '—'}</td>"
+            f"<td>{_he(f'{budget} W' if isinstance(budget, (int, float)) else 'Unknown')}</td>"
+            f"<td>{observed_watts:.1f} W</td>"
+            f"<td>{_he(headroom)}</td>"
+            f"<td>{_he(str(reference.get('source') or 'Not in local catalog'))}</td>"
+            "</tr>"
+        )
 
     section_parts = [
-        """
+        f"""
     <section id="switch-deep-dive" class="report-section">
       <h2>16. Switch Deep Dive</h2>
       <p>Port-level views for each MS switch, including link status, negotiated speed, traffic, PoE draw, inferred connected device, and upstream/downstream placement in the switching tree.</p>
+      <div class="summary-card">
+        <div class="summary-title">Source Data Coverage</div>
+        <div class="summary-body">
+          Switches discovered: <strong>{len(switch_entries)}</strong> ·
+          Port telemetry available: <strong>{switches_with_port_status}</strong> ·
+          LLDP/CDP neighbor data available: <strong>{switches_with_lldp}</strong>.
+          If this section appears sparse, regenerate backups with a full API collection and confirm the
+          Dashboard API key can read switch port statuses, switch port configs, and LLDP/CDP data.
+        </div>
+      </div>
+      <h3>Switch Identity &amp; PoE Budget Reference</h3>
+      <table class="data dense switch-identity-table">
+        <thead>
+          <tr><th>Site</th><th>Switch</th><th>Model</th><th>Status</th><th>Ports Up</th><th>Known PoE Budget</th><th>Observed PoE Avg</th><th>Budget Headroom</th><th>Reference</th></tr>
+        </thead>
+        <tbody>{''.join(identity_rows)}</tbody>
+      </table>
     </section>
     """
     ]
@@ -183,6 +302,12 @@ def _build_switch_detail_section(
         issue_count = len(port_issues_by_switch.get(serial, []))
         poe_data = poe_by_serial.get(serial, {})
         poe_watts = float(poe_data.get("avgWatts", 0) or 0)
+        hardware_reference = catalog_models.get(model) or {}
+        poe_budget = hardware_reference.get("poeBudgetWatts")
+        poe_budget_text = f"{poe_budget} W" if isinstance(poe_budget, (int, float)) else "Unknown"
+        poe_headroom_text = "Unknown"
+        if isinstance(poe_budget, (int, float)):
+            poe_headroom_text = f"{max(0.0, float(poe_budget) - poe_watts):.1f} W"
         active_ports = sum(1 for port in ports if str(port.get("status") or "").lower() == "connected")
         uplink_ports = [port for port in ports if port.get("isUplink")]
         ranked_ports = sorted(
@@ -208,26 +333,22 @@ def _build_switch_detail_section(
             port_config = port_configs.get(port_id)
             usage = port.get("usageInKb") or {}
             traffic = port.get("trafficInKbps") or {}
-            errors = port.get("errors") or []
-            if isinstance(errors, str):
-                errors = [errors]
-            warnings = port.get("warnings") or []
-            if isinstance(warnings, str):
-                warnings = [warnings]
+            errors = _meaningful_port_messages(port.get("errors") or [])
+            warnings = _meaningful_port_messages(port.get("warnings") or [])
             poe = port.get("poe") or {}
             power_wh = port.get("powerUsageInWh")
             indicators = []
             if port.get("isUplink"):
-                indicators.append('<span class="badge badge-info">Uplink</span>')
+                indicators.append('<span class="badge badge-info">U</span>')
             if poe.get("isAllocated") or (isinstance(power_wh, (int, float)) and power_wh > 0):
-                indicators.append('<span class="badge badge-ok">PoE</span>')
+                indicators.append('<span class="badge badge-ok">P</span>')
             if errors:
-                indicators.append(f'<span class="badge badge-fail">{len(errors)} error(s)</span>')
+                indicators.append(f'<span class="badge badge-fail">E{len(errors)}</span>')
             elif warnings:
-                indicators.append(f'<span class="badge badge-warn">{len(warnings)} warning(s)</span>')
+                indicators.append(f'<span class="badge badge-warn">W{len(warnings)}</span>')
             speed = str(port.get("speed") or "—")
-            if speed.startswith("100 ") or speed.startswith("10 "):
-                indicators.append(f'<span class="badge badge-warn">{_he(speed)}</span>')
+            if _is_low_speed_link(speed):
+                indicators.append(f'<span class="badge badge-warn">{_he(_speed_label(speed))}</span>')
             role = _port_role_label(port, port_config, serial_to_dev)
             vlan_text = _describe_vlan_mode(port_config)
             port_name = "—"
@@ -244,18 +365,18 @@ def _build_switch_detail_section(
             table_rows.append(
                 "<tr>"
                 f"<td>{_he(port_id or '—')}</td>"
-                f"<td>{_he(port_name)}</td>"
-                f"<td><span class=\"badge {heat_badge_cls}\">{_he(heat_label)} {heat_score:.0f}</span></td>"
-                f"<td>{_he(role)}</td>"
-                f"<td>{_he(str(port.get('status') or 'Unknown'))}</td>"
-                f"<td>{_he(speed)}</td>"
-                f"<td>{_he(str(port.get('duplex') or '—'))}</td>"
-                f"<td>{_he(vlan_text)}</td>"
+                f"<td title=\"{_he(port_name)}\">{_he(_compact_text(port_name, 16) or '—')}</td>"
+                f"<td><span class=\"badge {heat_badge_cls}\">{_he(heat_label[:1])}{heat_score:.0f}</span></td>"
+                f"<td>{_he(_port_role_short(role))}</td>"
+                f"<td>{_he(_compact_text(str(port.get('status') or 'Unknown'), 9))}</td>"
+                f"<td>{_he(_speed_label(speed))}</td>"
+                f"<td>{_he(_compact_text(str(port.get('duplex') or '—'), 4))}</td>"
+                f"<td title=\"{_he(vlan_text)}\">{_he(_compact_vlan_text(vlan_text))}</td>"
                 f"<td>{_format_usage_kb((usage or {}).get('total'))}</td>"
                 f"<td>{_he(str((traffic or {}).get('total') or '—'))} Kbps</td>"
                 f"<td>{_he(f'{float(power_wh):.1f} Wh' if isinstance(power_wh, (int, float)) else ('Allocated' if poe.get('isAllocated') else '—'))}</td>"
                 f"<td>{''.join(indicators) or '—'}</td>"
-                f"<td>{_inline_md(_describe_port_neighbor(port, serial_to_dev))}</td>"
+                f"<td title=\"{_he(_describe_port_neighbor(port, serial_to_dev))}\">{_inline_md(_compact_neighbor_text(port, serial_to_dev))}</td>"
                 "</tr>"
             )
 
@@ -271,6 +392,8 @@ def _build_switch_detail_section(
         <div class="switch-detail-stat"><span class="label">Ports Up</span><span class="value">{active_ports} / {len(ports) or 0}</span></div>
         <div class="switch-detail-stat"><span class="label">Uplinks</span><span class="value">{_he(', '.join(str(port.get('portId')) for port in uplink_ports) if uplink_ports else 'None flagged')}</span></div>
         <div class="switch-detail-stat"><span class="label">PoE Avg</span><span class="value">{poe_watts:.1f} W</span></div>
+        <div class="switch-detail-stat"><span class="label">PoE Budget</span><span class="value">{_he(poe_budget_text)}</span></div>
+        <div class="switch-detail-stat"><span class="label">PoE Headroom</span><span class="value">{_he(poe_headroom_text)}</span></div>
         <div class="switch-detail-stat"><span class="label">Port Issues</span><span class="value">{issue_count}</span></div>
       </div>
         <div class="switch-detail-card">
@@ -291,10 +414,15 @@ def _build_switch_detail_section(
         </div>
       </div>
       <table class="data switch-detail-table">
+        <colgroup>
+          <col class="c-port"><col class="c-label"><col class="c-heat"><col class="c-role">
+          <col class="c-status"><col class="c-speed"><col class="c-duplex"><col class="c-vlan">
+          <col class="c-total"><col class="c-rate"><col class="c-power"><col class="c-flags"><col class="c-neighbor">
+        </colgroup>
         <thead>
           <tr>
-            <th>Port</th><th>Port Label</th><th>Heat</th><th>Role</th><th>Status</th><th>Speed</th><th>Duplex</th><th>VLAN / Mode</th>
-            <th>Total Data</th><th>Current Throughput</th><th>Power</th><th>Indicators</th><th>Connected Device</th>
+            <th>Port</th><th>Label</th><th>Heat</th><th>Role</th><th>Stat</th><th>Spd</th><th>Dup</th><th>VLAN</th>
+            <th>Data</th><th>Kbps</th><th>Pwr</th><th>Flg</th><th>Neighbor</th>
           </tr>
         </thead>
         <tbody>{''.join(table_rows) if table_rows else '<tr><td colspan=\"13\">No switch port status data available.</td></tr>'}</tbody>
@@ -757,7 +885,11 @@ def _build_config_coverage_section(
         ("Wireless Settings", "wireless_settings.json"),
         ("Wireless SSIDs", "wireless_ssids.json"),
         ("Wireless RF Profiles", "wireless_rf_profiles.json"),
+        ("Network Clients", "network_clients.json"),
         ("Appliance Uplink Usage", "appliance_uplinks_usage.json"),
+        ("Appliance VLANs", "appliance_vlans.json"),
+        ("Appliance DHCP Subnets", "appliance_dhcp_subnets.json"),
+        ("Appliance Policy Backup", "appliance_policy_backup.json"),
         ("Security Baseline Summary", "security_baseline.json"),
         ("Licensing", "licensing.json"),
         ("Firmware Upgrades", "firmware_upgrades.json"),
@@ -776,6 +908,21 @@ def _build_config_coverage_section(
         base = os.path.join(org_dir, "networks", net_id)
         def _has(name: str) -> str:
             return "Present" if os.path.exists(os.path.join(base, name)) else "Missing"
+        is_appliance_network = "appliance" in (net.get("productTypes") or [])
+        if not is_appliance_network:
+            network_rows.append(
+                [
+                    net_name,
+                    "N/A",
+                    "N/A",
+                    "N/A",
+                    "N/A",
+                    "N/A",
+                    "N/A",
+                    _has("network_clients.json"),
+                ]
+            )
+            continue
         network_rows.append(
             [
                 net_name,
@@ -783,6 +930,9 @@ def _build_config_coverage_section(
                 _has("appliance_port_forwarding_rules.json"),
                 _has("appliance_intrusion.json"),
                 _has("appliance_malware.json"),
+                _has("appliance_vlans.json"),
+                _has("appliance_policy_backup.json"),
+                _has("network_clients.json"),
             ]
         )
 
@@ -791,9 +941,359 @@ def _build_config_coverage_section(
       <h2>11. Configuration Backup Coverage</h2>
       <p>This section documents which configuration artifacts are present in the current backup set. Missing items indicate API collection gaps or inaccessible product scopes that should be added before final audit sign-off.</p>
       {render_section("Org-Wide Configuration Artifacts", [["Artifact", "Status"]] + org_rows if org_rows else [])}
-      {render_section("Per-Network Appliance Configuration", [["Network", "Firewall Settings", "Port Forwarding", "IDS/IPS", "AMP/Malware"]] + network_rows if network_rows else [])}
+      {render_section("Per-Network Appliance Configuration", [["Network", "Firewall Settings", "Port Forwarding", "IDS/IPS", "AMP/Malware", "VLANs/DHCP", "Policy Backup", "Client Detail"]] + network_rows if network_rows else [])}
     </section>
     """
+
+
+def _policy_rules(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, dict) and isinstance(payload.get("rules"), list):
+        return [rule for rule in payload.get("rules", []) if isinstance(rule, dict)]
+    if isinstance(payload, list):
+        return [rule for rule in payload if isinstance(rule, dict)]
+    return []
+
+
+def _policy_error(payload: Any) -> str:
+    if isinstance(payload, dict) and payload.get("error"):
+        return str(payload.get("error"))
+    return ""
+
+
+def _content_filter_summary(payload: Any) -> Tuple[int, int, int, str]:
+    if not isinstance(payload, dict) or payload.get("error"):
+        return (0, 0, 0, "")
+    blocked = payload.get("blockedUrlCategories") or []
+    allowed = payload.get("allowedUrlPatterns") or []
+    blocked_patterns = payload.get("blockedUrlPatterns") or []
+    url_categories = ", ".join(
+        str((item or {}).get("name") or item)
+        for item in blocked[:8]
+    )
+    if len(blocked) > 8:
+        url_categories += f" +{len(blocked) - 8} more"
+    return (
+        len(blocked) if isinstance(blocked, list) else 0,
+        len(allowed) if isinstance(allowed, list) else 0,
+        len(blocked_patterns) if isinstance(blocked_patterns, list) else 0,
+        url_categories,
+    )
+
+
+def _build_appliance_policy_section(
+    networks: List[Dict[str, Any]],
+    appliance_policy_backup: Dict[str, Any],
+) -> str:
+    network_names = {
+        n.get("id"): n.get("name") or n.get("id")
+        for n in networks
+        if isinstance(n, dict) and n.get("id")
+    }
+    if not appliance_policy_backup:
+        return """
+      <h3>MX Firewall, Filtering &amp; Policy Backup</h3>
+      <div class="summary-card">
+        <div class="summary-body">
+          No MX firewall/content-filtering policy backup was present in this backup. Re-run collection
+          with <code>appliance_policy_backup.json</code> enabled to print L3/L7 firewall rules,
+          inbound rules, NAT, content filtering, traffic shaping, VPN, group policies, and syslog.
+        </div>
+      </div>
+        """
+
+    summary_rows = []
+    rule_rows = []
+    error_rows = []
+    l3_total = l7_total = inbound_total = nat_total = forwarding_total = 0
+    content_category_total = 0
+    content_allow_total = 0
+    content_block_total = 0
+    rule_limit = 80
+    displayed = 0
+
+    def _add_rule_row(net_name: str, family: str, rule: Dict[str, Any]) -> None:
+        nonlocal displayed
+        if displayed >= rule_limit:
+            return
+        displayed += 1
+        source = rule.get("srcCidr") or rule.get("srcPort") or rule.get("allowedIps") or "Any"
+        destination = (
+            rule.get("destCidr")
+            or rule.get("destPort")
+            or rule.get("lanIp")
+            or rule.get("value")
+            or rule.get("publicIp")
+            or "Any"
+        )
+        ports = rule.get("destPort") or rule.get("publicPort") or rule.get("localPort") or rule.get("port") or "Any"
+        rule_rows.append(
+            "<tr>"
+            f"<td>{_he(net_name)}</td>"
+            f"<td>{_he(family)}</td>"
+            f"<td>{_he(rule.get('policy') or rule.get('protocol') or rule.get('type') or 'Rule')}</td>"
+            f"<td>{_he(source)}</td>"
+            f"<td>{_he(destination)}</td>"
+            f"<td>{_he(ports)}</td>"
+            f"<td>{_he(rule.get('comment') or rule.get('name') or '—')}</td>"
+            "</tr>"
+        )
+
+    for net_id, payload in sorted(appliance_policy_backup.items(), key=lambda item: network_names.get(item[0], item[0])):
+        net_name = network_names.get(net_id, net_id)
+        if isinstance(payload, dict) and payload.get("error"):
+            error_rows.append(
+                f"<tr><td>{_he(net_name)}</td><td colspan=\"6\" class=\"empty-state\">{_he(str(payload.get('error'))[:180])}</td></tr>"
+            )
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        l3_rules = _policy_rules(payload.get("l3FirewallRules"))
+        l7_rules = _policy_rules(payload.get("l7FirewallRules"))
+        inbound_rules = _policy_rules(payload.get("inboundFirewallRules"))
+        port_forwarding = _policy_rules(payload.get("portForwardingRules"))
+        nat_1_1 = _policy_rules(payload.get("oneToOneNatRules"))
+        nat_1_many = _policy_rules(payload.get("oneToManyNatRules"))
+        group_policies = payload.get("groupPolicies") if isinstance(payload.get("groupPolicies"), list) else []
+        syslog_servers = payload.get("syslogServers", {})
+        syslog_count = len(syslog_servers.get("servers") or []) if isinstance(syslog_servers, dict) else 0
+        vpn = payload.get("siteToSiteVpn") if isinstance(payload.get("siteToSiteVpn"), dict) else {}
+        vpn_mode = vpn.get("mode") or "not captured"
+        cats, allows, blocks, cat_names = _content_filter_summary(payload.get("contentFiltering"))
+
+        l3_total += len(l3_rules)
+        l7_total += len(l7_rules)
+        inbound_total += len(inbound_rules)
+        forwarding_total += len(port_forwarding)
+        nat_total += len(nat_1_1) + len(nat_1_many)
+        content_category_total += cats
+        content_allow_total += allows
+        content_block_total += blocks
+
+        summary_rows.append(
+            "<tr>"
+            f"<td>{_he(net_name)}</td>"
+            f"<td>{len(l3_rules)}</td>"
+            f"<td>{len(l7_rules)}</td>"
+            f"<td>{len(inbound_rules)}</td>"
+            f"<td>{len(port_forwarding)}</td>"
+            f"<td>{len(nat_1_1) + len(nat_1_many)}</td>"
+            f"<td>{cats} cat / {allows} allow / {blocks} block</td>"
+            f"<td>{len(group_policies)}</td>"
+            f"<td>{_he(str(vpn_mode))}</td>"
+            f"<td>{syslog_count}</td>"
+            "</tr>"
+        )
+
+        for family, rules in (
+            ("L3", l3_rules),
+            ("L7", l7_rules),
+            ("Inbound", inbound_rules),
+            ("Port Forward", port_forwarding),
+            ("1:1 NAT", nat_1_1),
+            ("1:Many NAT", nat_1_many),
+        ):
+            for rule in rules:
+                _add_rule_row(net_name, family, rule)
+        if cat_names:
+            rule_rows.append(
+                "<tr>"
+                f"<td>{_he(net_name)}</td><td>Content Filter</td><td>Blocked Categories</td>"
+                f"<td colspan=\"4\">{_he(cat_names)}</td>"
+                "</tr>"
+            )
+
+        for key, item in payload.items():
+            err = _policy_error(item)
+            if err:
+                error_rows.append(
+                    "<tr>"
+                    f"<td>{_he(net_name)}</td><td>{_he(key)}</td>"
+                    f"<td colspan=\"5\" class=\"empty-state\">{_he(err[:180])}</td>"
+                    "</tr>"
+                )
+
+    omitted_note = ""
+    if displayed >= rule_limit:
+        omitted_note = (
+            f"<p class=\"muted\">Rule table capped at {rule_limit} rows for report readability. "
+            "The JSON backup contains the full policy export.</p>"
+        )
+
+    return f"""
+      <h3>MX Firewall, Filtering &amp; Policy Backup</h3>
+      <div class="summary-card">
+        <div class="summary-title">Policy Collection Summary</div>
+        <div class="summary-body">
+          L3 rules: <strong>{l3_total}</strong>.
+          L7 rules: <strong>{l7_total}</strong>.
+          Inbound rules: <strong>{inbound_total}</strong>.
+          Port forwards: <strong>{forwarding_total}</strong>.
+          NAT mappings: <strong>{nat_total}</strong>.
+          Content filter customizations: <strong>{content_category_total}</strong> blocked categories,
+          <strong>{content_allow_total}</strong> allowed URL patterns,
+          <strong>{content_block_total}</strong> blocked URL patterns.
+        </div>
+      </div>
+      <h4>Policy Backup by Network</h4>
+      <table class="data dense">
+        <thead>
+          <tr><th>Network</th><th>L3</th><th>L7</th><th>Inbound</th><th>Fwd</th><th>NAT</th><th>Content Filtering</th><th>Groups</th><th>VPN</th><th>Syslog</th></tr>
+        </thead>
+        <tbody>{''.join(summary_rows) if summary_rows else '<tr><td colspan="10" class="empty-state">No MX policy records were present.</td></tr>'}</tbody>
+      </table>
+      <h4>Printable Firewall &amp; NAT Rule Snapshot</h4>
+      <table class="data dense">
+        <thead>
+          <tr><th>Network</th><th>Policy</th><th>Action / Type</th><th>Source</th><th>Destination</th><th>Ports</th><th>Comment / Name</th></tr>
+        </thead>
+        <tbody>{''.join(rule_rows + error_rows) if (rule_rows or error_rows) else '<tr><td colspan="7" class="empty-state">No firewall, NAT, or content-filtering rows were present.</td></tr>'}</tbody>
+      </table>
+      {omitted_note}
+        """
+
+
+def _build_addressing_dhcp_section(
+    networks: List[Dict[str, Any]],
+    appliance_vlans_by_network: Dict[str, Any],
+    appliance_dhcp_subnets_by_serial: Dict[str, Any],
+    client_records: List[Dict[str, Any]],
+    devices: List[Dict[str, Any]],
+) -> str:
+    network_names = {
+        n.get("id"): n.get("name") or n.get("id")
+        for n in networks
+        if isinstance(n, dict) and n.get("id")
+    }
+    appliance_names = {
+        d.get("serial"): d.get("name") or d.get("model") or d.get("serial")
+        for d in devices
+        if isinstance(d, dict) and d.get("serial") and d.get("productType") == "appliance"
+    }
+
+    client_counts: Dict[Tuple[str, str], int] = {}
+    for client in client_records:
+        if not isinstance(client, dict):
+            continue
+        net_id = client.get("networkId") or (client.get("network") or {}).get("id")
+        vlan = str(client.get("vlan") or client.get("vlanId") or client.get("namedVlan") or "—")
+        if net_id:
+            client_counts[(str(net_id), vlan)] = client_counts.get((str(net_id), vlan), 0) + 1
+
+    vlan_rows = []
+    vlan_total = 0
+    dhcp_enabled = 0
+    relay_count = 0
+    for net_id, vlans in appliance_vlans_by_network.items() if isinstance(appliance_vlans_by_network, dict) else []:
+        if isinstance(vlans, dict) and vlans.get("error"):
+            vlan_rows.append(
+                "<tr>"
+                f"<td>{_he(network_names.get(net_id, net_id))}</td>"
+                "<td colspan=\"8\" class=\"empty-state\">"
+                f"{_he(str(vlans.get('error'))[:180])}"
+                "</td></tr>"
+            )
+            continue
+        if not isinstance(vlans, list):
+            continue
+        for vlan in sorted(vlans, key=lambda item: str(item.get("id") or item.get("name") or "")):
+            if not isinstance(vlan, dict):
+                continue
+            vlan_total += 1
+            handling = str(vlan.get("dhcpHandling") or "Unknown")
+            if "run a dhcp server" in handling.lower():
+                dhcp_enabled += 1
+            if "relay" in handling.lower():
+                relay_count += 1
+            vlan_id = str(vlan.get("id") or "—")
+            clients = client_counts.get((str(net_id), vlan_id), 0)
+            vlan_rows.append(
+                "<tr>"
+                f"<td>{_he(network_names.get(net_id, net_id))}</td>"
+                f"<td>{_he(vlan_id)}</td>"
+                f"<td>{_he(vlan.get('name') or '—')}</td>"
+                f"<td><code>{_he(vlan.get('subnet') or vlan.get('cidr') or '—')}</code></td>"
+                f"<td><code>{_he(vlan.get('applianceIp') or '—')}</code></td>"
+                f"<td>{_he(handling)}</td>"
+                f"<td>{_he(vlan.get('dhcpLeaseTime') or '—')}</td>"
+                f"<td>{_he(', '.join(str(ip) for ip in vlan.get('dhcpRelayServerIps') or []) or '—')}</td>"
+                f"<td>{clients}</td>"
+                "</tr>"
+            )
+
+    dhcp_rows = []
+    constrained = 0
+    for serial, subnets in appliance_dhcp_subnets_by_serial.items() if isinstance(appliance_dhcp_subnets_by_serial, dict) else []:
+        if isinstance(subnets, dict) and subnets.get("error"):
+            dhcp_rows.append(
+                "<tr>"
+                f"<td>{_he(appliance_names.get(serial, serial))}<br><code>{_he(serial)}</code></td>"
+                "<td colspan=\"5\" class=\"empty-state\">"
+                f"{_he(str(subnets.get('error'))[:180])}"
+                "</td></tr>"
+            )
+            continue
+        if not isinstance(subnets, list):
+            continue
+        for subnet in sorted(subnets, key=lambda item: str(item.get("subnet") or "")):
+            if not isinstance(subnet, dict):
+                continue
+            used = int(subnet.get("usedCount") or 0)
+            free = int(subnet.get("freeCount") or 0)
+            total = used + free
+            pct = (used / total * 100) if total else 0.0
+            if total and pct >= 80:
+                constrained += 1
+            cls = "badge-fail" if pct >= 90 else "badge-warn" if pct >= 80 else "badge-ok"
+            dhcp_rows.append(
+                "<tr>"
+                f"<td>{_he(appliance_names.get(serial, serial))}<br><code>{_he(serial)}</code></td>"
+                f"<td>{_he(str(subnet.get('vlanId') or '—'))}</td>"
+                f"<td><code>{_he(subnet.get('subnet') or '—')}</code></td>"
+                f"<td>{used}</td>"
+                f"<td>{free}</td>"
+                f"<td><span class=\"badge {cls}\">{pct:.1f}% used</span></td>"
+                "</tr>"
+            )
+
+    if not vlan_rows and not dhcp_rows:
+        return """
+      <h3>Addressing &amp; DHCP Scope Audit</h3>
+      <div class="summary-card">
+        <div class="summary-body">
+          No MX VLAN or DHCP subnet telemetry was present in this backup. Re-run collection with
+          <code>appliance_vlans.json</code> and <code>appliance_dhcp_subnets.json</code> enabled
+          to populate subnet, gateway, DHCP handling, relay, lease-time, and pool-utilization data.
+        </div>
+      </div>
+        """
+
+    return f"""
+      <h3>Addressing &amp; DHCP Scope Audit</h3>
+      <div class="summary-card">
+        <div class="summary-title">Addressing Collection Summary</div>
+        <div class="summary-body">
+          MX VLAN definitions observed: <strong>{vlan_total}</strong>.
+          DHCP server VLANs: <strong>{dhcp_enabled}</strong>.
+          DHCP relay VLANs: <strong>{relay_count}</strong>.
+          DHCP scopes at or above 80% utilization: <strong>{constrained}</strong>.
+        </div>
+      </div>
+      <h4>MX VLAN Interfaces</h4>
+      <table class="data dense">
+        <thead>
+          <tr><th>Network</th><th>VLAN</th><th>Name</th><th>Subnet</th><th>Gateway</th><th>DHCP Mode</th><th>Lease</th><th>Relay Servers</th><th>Clients Seen</th></tr>
+        </thead>
+        <tbody>{''.join(vlan_rows) if vlan_rows else '<tr><td colspan="9" class="empty-state">No MX VLAN interface definitions were present.</td></tr>'}</tbody>
+      </table>
+      <h4>DHCP Pool Utilization</h4>
+      <table class="data dense">
+        <thead>
+          <tr><th>Appliance</th><th>VLAN</th><th>Subnet</th><th>Used</th><th>Free</th><th>Utilization</th></tr>
+        </thead>
+        <tbody>{''.join(dhcp_rows) if dhcp_rows else '<tr><td colspan="6" class="empty-state">No DHCP pool utilization records were present.</td></tr>'}</tbody>
+      </table>
+        """
 
 
 def _build_budget_forecast_section(

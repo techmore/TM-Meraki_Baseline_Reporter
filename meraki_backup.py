@@ -215,6 +215,18 @@ def recommend_switch_ports(
                 port_map[pid] = cfg
         configs_by_serial_port[serial] = port_map
 
+    def _meaningful_port_messages(messages: List[str], is_uplink: bool) -> List[str]:
+        benign_fragments = ("disconnected", "not connected", "no link", "link down", "down")
+        result = []
+        for message in messages:
+            text = str(message or "").strip()
+            if not text:
+                continue
+            if not is_uplink and any(fragment in text.lower() for fragment in benign_fragments):
+                continue
+            result.append(text)
+        return result
+
     for serial, ports in port_statuses.items():
         cfg_map = configs_by_serial_port.get(serial, {})
         for p in ports:
@@ -249,7 +261,7 @@ def recommend_switch_ports(
                     "issue": "Uplink disconnected",
                     "detail": "Disconnected",
                 })
-            errors = [e for e in (p.get("errors") or []) if not (e in ("Port disconnected", "Port disabled") and not p.get("isUplink"))]
+            errors = _meaningful_port_messages(p.get("errors") or [], bool(p.get("isUplink")))
             if errors:
                 findings.append({
                     "serial": serial,
@@ -257,7 +269,7 @@ def recommend_switch_ports(
                     "issue": "Port errors",
                     "detail": ", ".join(errors),
                 })
-            warnings = p.get("warnings") or []
+            warnings = _meaningful_port_messages(p.get("warnings") or [], bool(p.get("isUplink")))
             if warnings:
                 findings.append({
                     "serial": serial,
@@ -415,6 +427,8 @@ def summarize_ap_clients(clients_by_network: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(data, list):
             continue
         for c in data:
+            if c.get("recentDeviceConnection") not in (None, "Wireless"):
+                continue
             serial = c.get("recentDeviceSerial") or c.get("recentDeviceSerialNumber")
             if not serial:
                 continue
@@ -872,7 +886,7 @@ def build_recommendations(
     ap_clients = ap_client_summary.get("ap_client_counts") or []
     if ap_clients:
         lines.append("## Wireless Client Load")
-        lines.append("- Top APs by client count (last 1 hour). Investigate if sustained high load.")
+        lines.append("- Top APs by wireless client count (last 24 hours). Investigate if sustained high load.")
         for serial, count in ap_clients[:10]:
             lines.append(f"- AP {serial}: {count} clients")
         lines.append("")
@@ -1127,11 +1141,20 @@ def main() -> int:
             clients_overview = {}
             wireless_rf_profiles = {}
             wireless_settings = {}
+            network_clients = {}
             wireless_clients = {}
             wireless_ssids = {}
             alerts_history = {}
             appliance_baseline = {}
             appliance_uplinks_usage = {}
+            appliance_vlans = {}
+            appliance_dhcp_subnets = {}
+            appliance_policy_backup = {}
+            appliances_by_network: Dict[str, List[Dict[str, Any]]] = {}
+            for appliance in devices_by_type.get("appliance", []):
+                net_id_for_appliance = appliance.get("networkId")
+                if net_id_for_appliance:
+                    appliances_by_network.setdefault(net_id_for_appliance, []).append(appliance)
             if networks:
                 log_line(log_f, "INFO", f"Collecting network-level telemetry for {len(networks)} network(s) in {org_name}")
             for idx, net in enumerate(networks, start=1):
@@ -1190,16 +1213,19 @@ def main() -> int:
                     "Wireless settings unavailable",
                     capability_aware=True,
                 )
-                wireless_clients[net_id] = _load_or_fetch_net(
-                    "wireless_clients.json",
+                network_clients[net_id] = _load_or_fetch_net(
+                    "network_clients.json",
                     lambda: safe_paged_get(
-                        f"/networks/{net_id}/wireless/clients",
+                        f"/networks/{net_id}/clients",
                         api_key,
-                        params={"timespan": TIMESPAN_1H},
+                        params={"timespan": TIMESPAN_24H},
                     ),
-                    "Wireless clients unavailable",
-                    capability_aware=True,
+                    "Network clients failed",
                 )
+                wireless_clients[net_id] = [
+                    c for c in network_clients.get(net_id, [])
+                    if isinstance(c, dict) and c.get("recentDeviceConnection") == "Wireless"
+                ] if isinstance(network_clients.get(net_id), list) else network_clients.get(net_id, {})
                 wireless_ssids[net_id] = _load_or_fetch_net(
                     "wireless_ssids.json",
                     lambda: safe_paged_get(f"/networks/{net_id}/wireless/ssids", api_key),
@@ -1219,6 +1245,13 @@ def main() -> int:
 
                 if "appliance" in (net.get("productTypes") or []):
                     net_baseline: Dict[str, Any] = {}
+                    policy_backup: Dict[str, Any] = {}
+                    appliance_vlans[net_id] = _load_or_fetch_net(
+                        "appliance_vlans.json",
+                        lambda: safe_paged_get(f"/networks/{net_id}/appliance/vlans", api_key),
+                        "Appliance VLANs unavailable",
+                        capability_aware=True,
+                    )
                     appliance_uplinks_usage[net_id] = _load_or_fetch_net(
                         "appliance_uplinks_usage.json",
                         lambda: safe_get_one(
@@ -1254,18 +1287,155 @@ def main() -> int:
                         "Appliance port forwarding unavailable",
                         capability_aware=True,
                     )
+                    policy_backup["portForwardingRules"] = net_baseline["portForwardingRules"]
+                    policy_endpoints: List[Tuple[str, str, Callable[[], Tuple[Any, Optional[str]]], str]] = [
+                        (
+                            "l3FirewallRules",
+                            "appliance_firewall_l3_rules.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/appliance/firewall/l3FirewallRules", api_key
+                            ),
+                            "Appliance L3 firewall rules unavailable",
+                        ),
+                        (
+                            "l7FirewallRules",
+                            "appliance_firewall_l7_rules.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/appliance/firewall/l7FirewallRules", api_key
+                            ),
+                            "Appliance L7 firewall rules unavailable",
+                        ),
+                        (
+                            "inboundFirewallRules",
+                            "appliance_firewall_inbound_rules.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/appliance/firewall/inboundFirewallRules", api_key
+                            ),
+                            "Appliance inbound firewall rules unavailable",
+                        ),
+                        (
+                            "cellularFirewallRules",
+                            "appliance_firewall_cellular_rules.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/appliance/firewall/cellularFirewallRules", api_key
+                            ),
+                            "Appliance cellular firewall rules unavailable",
+                        ),
+                        (
+                            "inboundCellularFirewallRules",
+                            "appliance_firewall_inbound_cellular_rules.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/appliance/firewall/inboundCellularFirewallRules", api_key
+                            ),
+                            "Appliance inbound cellular firewall rules unavailable",
+                        ),
+                        (
+                            "oneToOneNatRules",
+                            "appliance_one_to_one_nat_rules.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/appliance/firewall/oneToOneNatRules", api_key
+                            ),
+                            "Appliance 1:1 NAT rules unavailable",
+                        ),
+                        (
+                            "oneToManyNatRules",
+                            "appliance_one_to_many_nat_rules.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/appliance/firewall/oneToManyNatRules", api_key
+                            ),
+                            "Appliance 1:Many NAT rules unavailable",
+                        ),
+                        (
+                            "firewalledServices",
+                            "appliance_firewalled_services.json",
+                            lambda net_id=net_id: safe_paged_get(
+                                f"/networks/{net_id}/appliance/firewall/firewalledServices", api_key
+                            ),
+                            "Appliance firewalled services unavailable",
+                        ),
+                        (
+                            "contentFiltering",
+                            "appliance_content_filtering.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/appliance/contentFiltering", api_key
+                            ),
+                            "Appliance content filtering unavailable",
+                        ),
+                        (
+                            "trafficShapingRules",
+                            "appliance_traffic_shaping_rules.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/appliance/trafficShaping/rules", api_key
+                            ),
+                            "Appliance traffic shaping rules unavailable",
+                        ),
+                        (
+                            "siteToSiteVpn",
+                            "appliance_site_to_site_vpn.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/appliance/vpn/siteToSiteVpn", api_key
+                            ),
+                            "Appliance site-to-site VPN unavailable",
+                        ),
+                        (
+                            "groupPolicies",
+                            "network_group_policies.json",
+                            lambda net_id=net_id: safe_paged_get(
+                                f"/networks/{net_id}/groupPolicies", api_key
+                            ),
+                            "Network group policies unavailable",
+                        ),
+                        (
+                            "syslogServers",
+                            "network_syslog_servers.json",
+                            lambda net_id=net_id: safe_get_one(
+                                f"/networks/{net_id}/syslogServers", api_key
+                            ),
+                            "Network syslog servers unavailable",
+                        ),
+                    ]
+                    for key, filename, fetcher, warn_label in policy_endpoints:
+                        policy_backup[key] = _load_or_fetch_net(
+                            filename,
+                            fetcher,
+                            warn_label,
+                            capability_aware=True,
+                        )
 
                     appliance_baseline[net_id] = net_baseline
+                    appliance_policy_backup[net_id] = policy_backup
+                    _write_granular_json(org_dir, "networks", net_id, "appliance_policy_backup.json", policy_backup)
+                    for appliance in appliances_by_network.get(net_id, []):
+                        serial = appliance.get("serial")
+                        if not serial:
+                            continue
+                        if _granular_cache_fresh(org_dir, "appliances", serial, "dhcp_subnets.json", max_age_h, force):
+                            dhcp_subnets = _read_granular_json(org_dir, "appliances", serial, "dhcp_subnets.json")
+                        else:
+                            dhcp_subnets, dhcp_err = safe_paged_get(
+                                f"/devices/{serial}/appliance/dhcp/subnets",
+                                api_key,
+                            )
+                            dhcp_subnets = dhcp_subnets if not dhcp_err else {"error": dhcp_err}
+                            _write_granular_json(org_dir, "appliances", serial, "dhcp_subnets.json", dhcp_subnets)
+                            if dhcp_err:
+                                level = "INFO" if is_capability_error(dhcp_err) else "WARN"
+                                log_line(log_f, level, f"Appliance DHCP subnets unavailable for {serial}: {dhcp_err}")
+                        appliance_dhcp_subnets[serial] = dhcp_subnets
 
             write_json(_pf("wireless_connection_stats.json"), wireless_connection_stats)
             write_json(_pf("wireless_mesh_statuses.json"), wireless_mesh_statuses)
             write_json(_pf("clients_overview.json"), clients_overview)
             write_json(_pf("wireless_rf_profiles.json"), wireless_rf_profiles)
             write_json(_pf("wireless_settings.json"), wireless_settings)
+            write_json(_pf("network_clients.json"), network_clients)
             write_json(_pf("wireless_clients.json"), wireless_clients)
             write_json(_pf("wireless_ssids.json"), wireless_ssids)
             write_json(_pf("alerts_history.json"), alerts_history)
             write_json(_pf("appliance_uplinks_usage.json"), appliance_uplinks_usage)
+            write_json(_pf("appliance_vlans.json"), appliance_vlans)
+            write_json(_pf("appliance_dhcp_subnets.json"), appliance_dhcp_subnets)
+            write_json(_pf("appliance_policy_backup.json"), appliance_policy_backup)
             write_json(_pf("inventory_summary.json"), inventory_summary)
             _sb_path = _pf("security_baseline.json")
             if force or not _cache_is_fresh(_sb_path, max_age_h=max_age_h, force=False):
@@ -1278,7 +1448,7 @@ def main() -> int:
             # Recommendations
             wireless_summary = summarize_wireless_connection_stats(wireless_connection_stats)
             rf_summary = summarize_rf_profiles(wireless_rf_profiles)
-            ap_client_summary = summarize_ap_clients(wireless_clients)
+            ap_client_summary = summarize_ap_clients(network_clients)
             switch_findings = recommend_switch_ports(port_statuses, port_configs)
             poe_summary = summarize_poe_power(port_statuses, TIMESPAN_24H)
             _ch_path = _pf("channel_utilization_by_device.json")

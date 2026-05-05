@@ -51,6 +51,7 @@ Generate a demo report from sanitized fixtures without Meraki API access:
 
 ```bash
 ./run.sh --demo-report --no-open
+./run.sh --demo-report --fixed-now 2026-05-02T21:30:00 --no-open
 ```
 
 Optional — specify a local Ollama model for AI-enhanced recommendations:
@@ -68,21 +69,33 @@ ollama pull gemma4:e2b
 
 ## Output
 
-All output is written to `backups/<org>/` (gitignored):
+`./run.sh` keeps raw Meraki backup data in `backups/<org>/` and writes generated
+shareable reports to `reports/` (both gitignored):
 
 - `recommendations.md` — per-org findings and recommendations
-- `SITE_NAME_Complete_Report_YYYY-MM-DD.html` / `.pdf` — named full report for sharing
-- `SITE_NAME_Executive_Summary_Report_YYYY-MM-DD.html` / `.pdf` — named executive summary
-- `SITE_NAME_Backup_Settings_Report_YYYY-MM-DD.html` / `.pdf` — named backup settings report
-- `report.html` / `report.pdf` — compatibility aliases for older scripts
 - `backups/master_recommendations.md` — combined across all orgs
 - `backups/recommendations_ai_enhanced.md` — LLM-reviewed version
+- `reports/<org>/<timestamp>/SITE_NAME_Complete_Report_YYYY-MM-DD.pdf` — run-specific full report
+- `reports/<org>/<timestamp>/SITE_NAME_Executive_Summary_Report_YYYY-MM-DD.pdf` — run-specific executive summary
+- `reports/<org>/<timestamp>/SITE_NAME_Backup_Settings_Report_YYYY-MM-DD.pdf` — run-specific backup settings report
+- `reports/latest/<org>/report.pdf` — compatibility alias for the latest full report
+
+By default `run.sh` passes `--pdf-only`, so generated HTML is removed after PDFs
+are rendered. Use `./run.sh --keep-html` when HTML inspection is useful.
+Direct `python3 -m reporting` remains backward-compatible and writes reports into
+each `backups/<org>/` directory unless `--reports-dir` or `--output-dir` is used.
 
 ## Optional Pricing Input
 
 To enable the Hardware Cost & Refresh Plan section, create a `pricing.json` at the repo root
 or within a specific org backup directory. See `pricing.json.example` for the expected shape.
 Set `unit_cost` and optional `replacement_cycle_years` per model.
+
+The UniFi migration section also reads `reporting/reference/pricing_reference.json`, which
+contains maintained public UniFi planning prices, product source URLs, UI Care add-ons, and
+Meraki-to-UniFi model-family mappings. Use an org-local `pricing.json` whenever reseller,
+E-rate, Meraki, support, optics, or professional-services pricing needs to override the
+public planning reference.
 
 ## Requirements
 
@@ -118,9 +131,20 @@ Run the script entrypoint against existing backups:
 
 ```bash
 python3 -m reporting
+python3 -m reporting --reports-dir reports --pdf-only
 python3 -m reporting --source-dir tests/fixtures --org-name "Fixture Demo Org" --output-dir backups/.demo/Fixture_Demo_Org
 ./run.sh --report-only --no-ai-review --no-open
 ```
+
+Generate deterministic fixture output for regression checks:
+
+```bash
+./run.sh --demo-report --fixed-now 2026-05-02T21:30:00 --no-open
+python3 -m reporting --source-dir tests/fixtures --org-name "Fixture Demo Org" --output-dir backups/.demo/Fixture_Demo_Org --fixed-now 2026-05-02T21:30:00
+```
+
+The same fixed clock can be set for compatible report-generation paths with
+`MERAKI_REPORT_FIXED_NOW=2026-05-02T21:30:00`.
 
 Run tests:
 

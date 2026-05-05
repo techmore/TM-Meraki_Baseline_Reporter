@@ -6,6 +6,7 @@ enhance merged Meraki recommendations before PDF generation.
 Exits 0 (non-fatal) if Ollama is unavailable so the pipeline continues.
 Output: <backup_dir>/recommendations_ai_enhanced.md
 """
+import argparse
 import json
 import logging
 import os
@@ -34,10 +35,56 @@ OLLAMA_URL = "http://localhost:11434"
 #                  or: ./run.sh --model qwen3.5:9b
 _DEFAULT_MODEL = "gemma4:e2b"
 MODEL = os.getenv("OLLAMA_MODEL", _DEFAULT_MODEL)
+CONFIG_ERRORS: list[str] = []
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        CONFIG_ERRORS.append(f"{name} must be an integer")
+        return default
+    if value <= 0:
+        CONFIG_ERRORS.append(f"{name} must be greater than zero")
+        return default
+    return value
+
 
 # Keep chunks conservative so small local models have room for the prompt
 # and generated review while still preserving section boundaries.
-MAX_INPUT_CHARS = 50_000
+MAX_INPUT_CHARS = _env_int("OLLAMA_MAX_INPUT_CHARS", 50_000)
+
+
+def configure_ai(model: str | None = None, max_input_chars: int | None = None) -> None:
+    """Apply runtime AI review options."""
+    global MODEL, MAX_INPUT_CHARS
+    if model:
+        MODEL = model
+    if max_input_chars is not None:
+        if max_input_chars <= 0:
+            raise ValueError("max_input_chars must be greater than zero")
+        MAX_INPUT_CHARS = max_input_chars
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Review merged Meraki recommendations with a local Ollama model.",
+    )
+    parser.add_argument(
+        "-m",
+        "--model",
+        help=f"Ollama model to use. Default: {MODEL}",
+    )
+    parser.add_argument(
+        "--max-input-chars",
+        type=int,
+        default=None,
+        help=f"Maximum characters per review chunk. Default: {MAX_INPUT_CHARS}",
+    )
+    return parser.parse_args(argv)
 
 SYSTEM_PROMPT = """\
 You are a senior network engineer with deep expertise in Cisco Meraki enterprise deployments, \
@@ -277,7 +324,16 @@ def review_content(content: str) -> str:
     )
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args = parse_args([] if argv is None else argv)
+        if CONFIG_ERRORS and args.max_input_chars is None:
+            raise ValueError(CONFIG_ERRORS[0])
+        configure_ai(model=args.model, max_input_chars=args.max_input_chars)
+    except ValueError as exc:
+        print(f"ollama_review.py: error: {exc}", file=sys.stderr)
+        return 2
+
     master_rec = os.path.join(BACKUPS_DIR, "master_recommendations.md")
     if not os.path.exists(master_rec):
         log.warning("master_recommendations.md not found at %s", master_rec)
@@ -320,4 +376,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

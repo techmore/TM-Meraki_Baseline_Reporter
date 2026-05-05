@@ -1,0 +1,179 @@
+{
+  "meta": {
+    "name": "Meraki hardware reference",
+    "updated": "2026-05-03",
+    "notes": [
+      "PoE budgets are static hardware capabilities from Cisco Meraki product documentation.",
+      "Observed draw still comes from collected Meraki Dashboard API telemetry.",
+      "Unknown models should render as unknown rather than estimated."
+    ],
+    "sources": [
+      {
+        "title": "MS225 Overview and Specifications",
+        "url": "https://documentation.meraki.com/MS/MS_Overview_and_Specifications/MS225_Overview_and_Specifications"
+      },
+      {
+        "title": "MS120 Overview and Specifications",
+        "url": "https://documentation.meraki.com/MS/MS_Overview_and_Specifications/MS120_Overview_and_Specifications"
+      },
+      {
+        "title": "PoE Support on MS Switches",
+        "url": "https://documentation.meraki.com/Switching/MS_-_Switches/Operate_and_Maintain/How-Tos/PoE_Support_on_MS_Switches"
+      },
+      {
+        "title": "MS130 Datasheet",
+        "url": "https://documentation.meraki.com/Switching/MS_-_Switches/Product_Information/Overviews_and_Datasheets/MS130_Datasheet"
+      },
+      {
+        "title": "MS210 Series Installation Guide",
+        "url": "https://documentation.meraki.com/MS/Install_and_Get_Started/Installation_Guides/MS210_Series_Installation_Guide"
+      },
+      {
+        "title": "Catalyst 9300-M Datasheet",
+        "url": "https://documentation.meraki.com/Switching/Cloud_Management_with_IOS_XE/Product_Information/Overviews_and_Datasheets/Catalyst_9300-M_Datasheet"
+      }
+    ]
+  },
+  "models": {
+    "MS120-8LP": {
+      "productType": "switch",
+      "poeBudgetWatts": 67,
+      "poePorts": 8,
+      "uplinkPorts": "2 SFP",
+      "source": "MS120 Overview and Specifications"
+    },
+    "MS120-8FP": {
+      "productType": "switch",
+      "poeBudgetWatts": 124,
+      "poePorts": 8,
+      "uplinkPorts": "2 SFP",
+      "source": "MS120 Overview and Specifications"
+    },
+    "MS120-24P": {
+      "productType": "switch",
+      "poeBudgetWatts": 370,
+      "poePorts": 24,
+      "uplinkPorts": "4 SFP",
+      "source": "MS120 Series Installation Guide"
+    },
+    "MS120-48LP": {
+      "productType": "switch",
+      "poeBudgetWatts": 370,
+      "poePorts": 48,
+      "uplinkPorts": "4 SFP",
+      "source": "MS120 Series Installation Guide"
+    },
+    "MS120-48FP": {
+      "productType": "switch",
+      "poeBudgetWatts": 740,
+      "poePorts": 48,
+      "uplinkPorts": "4 SFP",
+      "source": "MS120 Series Installation Guide"
+    },
+    "MS225-24P": {
+      "productType": "switch",
+      "poeBudgetWatts": 370,
+      "poePorts": 24,
+      "uplinkPorts": "4 SFP+",
+      "source": "MS225 Overview and Specifications"
+    },
+    "MS225-48LP": {
+      "productType": "switch",
+      "poeBudgetWatts": 370,
+      "poePorts": 48,
+      "uplinkPorts": "4 SFP+",
+      "source": "MS225 Series Installation Guide"
+    },
+    "MS225-48FP": {
+      "productType": "switch",
+      "poeBudgetWatts": 740,
+      "poePorts": 48,
+      "uplinkPorts": "4 SFP+",
+      "source": "MS225 Overview and Specifications"
+    },
+    "MS130-24P": {
+      "productType": "switch",
+      "poeBudgetWatts": 370,
+      "poePorts": 24,
+      "uplinkPorts": "4 SFP",
+      "source": "MS130 Datasheet"
+    },
+    "MS130-24X": {
+      "productType": "switch",
+      "poeBudgetWatts": 370,
+      "poePorts": 24,
+      "uplinkPorts": "4 SFP+",
+      "source": "MS130 Datasheet"
+    },
+    "MS130-48P": {
+      "productType": "switch",
+      "poeBudgetWatts": 740,
+      "poePorts": 48,
+      "uplinkPorts": "4 SFP",
+      "source": "MS130 Datasheet"
+    },
+    "MS130-48X": {
+      "productType": "switch",
+      "poeBudgetWatts": 740,
+      "poePorts": 48,
+      "uplinkPorts": "4 SFP+",
+      "source": "MS130 Datasheet"
+    },
+    "MS210-24P": {
+      "productType": "switch",
+      "poeBudgetWatts": 370,
+      "poePorts": 24,
+      "uplinkPorts": "4 SFP",
+      "source": "MS210 Series Installation Guide"
+    },
+    "MS210-48LP": {
+      "productType": "switch",
+      "poeBudgetWatts": 370,
+      "poePorts": 48,
+      "uplinkPorts": "4 SFP",
+      "source": "MS210 Series Installation Guide"
+    },
+    "MS210-48FP": {
+      "productType": "switch",
+      "poeBudgetWatts": 740,
+      "poePorts": 48,
+      "uplinkPorts": "4 SFP",
+      "source": "MS210 Series Installation Guide"
+    },
+    "C9300-24P": {
+      "productType": "switch",
+      "poeBudgetWatts": 445,
+      "poePorts": 24,
+      "uplinkPorts": "Modular",
+      "source": "Catalyst 9300-M Datasheet"
+    },
+    "C9300-24U": {
+      "productType": "switch",
+      "poeBudgetWatts": 830,
+      "poePorts": 24,
+      "uplinkPorts": "Modular",
+      "source": "Catalyst 9300-M Datasheet"
+    },
+    "C9300-48P": {
+      "productType": "switch",
+      "poeBudgetWatts": 437,
+      "poePorts": 48,
+      "uplinkPorts": "Modular",
+      "source": "Catalyst 9300-M Datasheet"
+    },
+    "C9300-48U": {
+      "productType": "switch",
+      "poeBudgetWatts": 822,
+      "poePorts": 48,
+      "uplinkPorts": "Modular",
+      "source": "Catalyst 9300-M Datasheet"
+    },
+    "C9300-48UXM": {
+      "productType": "switch",
+      "poeBudgetWatts": 490,
+      "poePorts": 48,
+      "uplinkPorts": "Modular",
+      "source": "Catalyst 9300-M Datasheet"
+    }
+  }
+}

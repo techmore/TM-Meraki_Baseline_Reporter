@@ -97,6 +97,21 @@ class TestSchemaVersion:
         assert isinstance(mb.PIPELINE_VERSION, str)
 
 
+class TestClientSummaries:
+    def test_ap_client_summary_ignores_wired_clients(self):
+        summary = mb.summarize_ap_clients(
+            {
+                "N_1": [
+                    {"recentDeviceConnection": "Wireless", "recentDeviceSerial": "AP1"},
+                    {"recentDeviceConnection": "Wireless", "recentDeviceSerial": "AP1"},
+                    {"recentDeviceConnection": "Wired", "recentDeviceSerial": "SW1"},
+                ]
+            }
+        )
+
+        assert summary["ap_client_counts"] == [("AP1", 2)]
+
+
 class TestPagedGetRateLimit:
     def test_retry_after_header_is_honored(self, monkeypatch):
         sleeps = []
@@ -217,3 +232,33 @@ class TestSummarizeInventory:
         result = mb.summarize_inventory(inventory)
         models = [m[0] for m in result.get("top_models", [])]
         assert "MS225" in models
+
+
+class TestRecommendSwitchPorts:
+    def test_disconnected_access_port_messages_are_not_findings(self):
+        result = mb.recommend_switch_ports(
+            {
+                "SW1": [
+                    {
+                        "portId": "1",
+                        "status": "Disconnected",
+                        "isUplink": False,
+                        "errors": ["Port disconnected", "No link detected"],
+                        "warnings": ["Link down"],
+                    },
+                    {
+                        "portId": "2",
+                        "status": "Connected",
+                        "isUplink": False,
+                        "errors": ["CRC errors detected"],
+                        "warnings": [],
+                    },
+                ]
+            },
+            {"SW1": [{"portId": "1", "enabled": True}, {"portId": "2", "enabled": True}]},
+        )
+
+        findings = result["switch_port_findings"]
+        assert len(findings) == 1
+        assert findings[0]["portId"] == "2"
+        assert findings[0]["detail"] == "CRC errors detected"
