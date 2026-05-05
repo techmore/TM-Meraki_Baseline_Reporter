@@ -1229,6 +1229,27 @@ def build_html(doc_title: str, body: str) -> str:
         padding: 3px 6px;
       }}
     }}
+    .ap-unit-page {{
+      page-break-before: always;
+      break-before: page;
+    }}
+    .ap-unit-page h2 {{
+      font-size: 22px;
+      margin-bottom: 8px;
+    }}
+    .ap-unit-page .kpi-value {{
+      font-size: 15px;
+      line-height: 1.25;
+    }}
+    @media print {{
+      .ap-unit-page {{
+        min-height: 92vh;
+      }}
+      .ap-unit-page table.data.dense th,
+      .ap-unit-page table.data.dense td {{
+        padding: 3px 6px;
+      }}
+    }}
     /* =====================================================
        NETWORK TOPOLOGY
        ===================================================== */

@@ -753,6 +753,69 @@ class TestBuildOrgReport:
         assert "Network Overview" in html
         assert "Executive Summary" not in html
 
+    def test_ap_spectrum_report_variant_renders_one_page_per_ap(self, tmp_path):
+        from reporting.app import build_org_report
+
+        for fn in os.listdir(FIXTURES):
+            src = os.path.join(FIXTURES, fn)
+            dst = tmp_path / fn
+            if os.path.isfile(src):
+                shutil.copy(src, dst)
+
+        (tmp_path / "channel_utilization_by_device.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "serial": "Q2AP-TEST-0001",
+                        "network": {"id": "N_test_001"},
+                        "byBand": [
+                            {
+                                "band": "5",
+                                "wifi": {"percentage": 62},
+                                "nonWifi": {"percentage": 2},
+                                "total": {"percentage": 78},
+                            }
+                        ],
+                    },
+                    {
+                        "serial": "Q2AP-TEST-0002",
+                        "network": {"id": "N_test_001"},
+                        "byBand": [
+                            {
+                                "band": "5",
+                                "wifi": {"percentage": 44},
+                                "nonWifi": {"percentage": 1},
+                                "total": {"percentage": 61},
+                            }
+                        ],
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "wireless_rf_profiles.json").write_text(
+            json.dumps(
+                {
+                    "N_test_001": [
+                        {
+                            "name": "Classroom Low Power",
+                            "fiveGhzSettings": {"minPower": 8, "maxPower": 17},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        html = build_org_report(str(tmp_path), "AP Spectrum Test", report_kind="ap_spectrum")
+        assert "AP Spectrum Availability &amp; Interference Report" in html
+        assert html.count("ap-unit-page") >= 2
+        assert "WAY TOO CLOSE / saturated RF bubble" in html
+        assert "Suspected Overlap Candidates" in html
+        assert "Classroom Low Power" in html
+        assert "remove, disable, or relocate one AP" in html
+        assert "Executive Summary" not in html
+
     def test_dated_complete_report_filename(self):
         from reporting.app import _dated_report_name
         filename = _dated_report_name(

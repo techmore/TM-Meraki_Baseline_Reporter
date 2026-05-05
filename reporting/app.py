@@ -32,6 +32,7 @@ from .sections import (
     _build_appliance_policy_section,
     _build_budget_forecast_section,
     _build_config_coverage_section,
+    _build_ap_spectrum_report,
     _build_switch_detail_section,
     _build_wan_capacity_section,
     _is_low_speed_link,
@@ -342,6 +343,40 @@ def generate_org_reports(
         html_targets = [backup_html_path, backup_named_html_alias, backup_html_alias]
         if latest_dir:
             html_targets.extend([latest_backup_html_alias, latest_backup_html_compat])
+        _cleanup_paths(tuple(path for path in html_targets if path))
+
+    ap_spectrum_body = build_org_report(source_dir, org_name, report_kind="ap_spectrum")
+    ap_spectrum_html = build_html(f"{org_name} — AP Spectrum & Interference Report", ap_spectrum_body)
+    ap_spectrum_html_path = os.path.join(output_dir, f"{_slug}_{_stamp}_ap_spectrum_report.html")
+    ap_spectrum_pdf_path = os.path.join(output_dir, f"{_slug}_{_stamp}_ap_spectrum_report.pdf")
+    ap_spectrum_named_html_alias = os.path.join(output_dir, _dated_report_name(org_name, "AP_Spectrum", _run_ts, "html"))
+    ap_spectrum_named_pdf_alias = os.path.join(output_dir, _dated_report_name(org_name, "AP_Spectrum", _run_ts, "pdf"))
+    ap_spectrum_html_alias = os.path.join(output_dir, "report_ap_spectrum.html")
+    ap_spectrum_pdf_alias = os.path.join(output_dir, "report_ap_spectrum.pdf")
+    if latest_dir:
+        ap_spectrum_html_path = ap_spectrum_named_html_alias
+        ap_spectrum_pdf_path = ap_spectrum_named_pdf_alias
+        ap_spectrum_html_alias = None
+        ap_spectrum_pdf_alias = None
+    latest_ap_spectrum_html_alias = os.path.join(latest_dir, _dated_report_name(org_name, "AP_Spectrum", _run_ts, "html")) if latest_dir else None
+    latest_ap_spectrum_pdf_alias = os.path.join(latest_dir, _dated_report_name(org_name, "AP_Spectrum", _run_ts, "pdf")) if latest_dir else None
+    latest_ap_spectrum_html_compat = os.path.join(latest_dir, "report_ap_spectrum.html") if latest_dir else None
+    latest_ap_spectrum_pdf_compat = os.path.join(latest_dir, "report_ap_spectrum.pdf") if latest_dir else None
+    _write_text_aliases(ap_spectrum_html, (ap_spectrum_html_path, ap_spectrum_named_html_alias, ap_spectrum_html_alias))
+    if latest_dir:
+        _write_text_aliases(ap_spectrum_html, (latest_ap_spectrum_html_alias, latest_ap_spectrum_html_compat))
+    ap_spectrum_pdf_ok = write_pdf(ap_spectrum_html_path, ap_spectrum_pdf_path)
+    if ap_spectrum_pdf_ok:
+        _copy_existing(ap_spectrum_pdf_path, (ap_spectrum_named_pdf_alias, ap_spectrum_pdf_alias))
+        if latest_dir:
+            _copy_existing(ap_spectrum_pdf_path, (latest_ap_spectrum_pdf_alias, latest_ap_spectrum_pdf_compat))
+        log.info("AP Spectrum PDF → %s", ap_spectrum_named_pdf_alias)
+    else:
+        log.info("AP Spectrum HTML → %s  (no PDF tool found)", ap_spectrum_html_path)
+    if not keep_html and ap_spectrum_pdf_ok:
+        html_targets = [ap_spectrum_html_path, ap_spectrum_named_html_alias, ap_spectrum_html_alias]
+        if latest_dir:
+            html_targets.extend([latest_ap_spectrum_html_alias, latest_ap_spectrum_html_compat])
         _cleanup_paths(tuple(path for path in html_targets if path))
 
     return 1
@@ -1121,6 +1156,12 @@ def build_org_report(
         wireless_stats,
         switch_port_statuses_by_switch,
     )
+    ap_spectrum_html = _build_ap_spectrum_report(
+        devices_by_network,
+        channel_util,
+        wireless_stats,
+        rf_profiles,
+    )
     config_coverage_html = _build_config_coverage_section(org_dir, networks)
     budget_forecast_html = _build_budget_forecast_section(inventory_summary, pricing_payload)
     wan_capacity_html = _build_wan_capacity_section(
@@ -1199,6 +1240,7 @@ def build_org_report(
     complete_report_name = _dated_report_name(org_name, "Complete", _now, "pdf")
     executive_report_name = _dated_report_name(org_name, "Executive_Summary", _now, "pdf")
     backup_report_name = _dated_report_name(org_name, "Backup_Settings", _now, "pdf")
+    ap_spectrum_report_name = _dated_report_name(org_name, "AP_Spectrum", _now, "pdf")
 
     report_guide_html = f"""
     <section id="report-guide" class="report-section">
@@ -1221,6 +1263,11 @@ def build_org_report(
           <div class="kpi-note"><a href="{_he(backup_report_name)}">{_he(backup_report_name)}</a></div>
         </div>
         <div class="kpi">
+          <div class="kpi-label">Wireless RF</div>
+          <div class="kpi-value">AP Spectrum</div>
+          <div class="kpi-note"><a href="{_he(ap_spectrum_report_name)}">{_he(ap_spectrum_report_name)}</a></div>
+        </div>
+        <div class="kpi">
           <div class="kpi-label">Full Context</div>
           <div class="kpi-value">Complete Report</div>
           <div class="kpi-note"><a href="{_he(complete_report_name)}">{_he(complete_report_name)}</a></div>
@@ -1231,6 +1278,7 @@ def build_org_report(
         <tbody>
           <tr><td>Leadership / Finance</td><td>Executive Summary, Recommendations, Hardware Cost &amp; Refresh Plan</td><td>Shows the largest risks, renewal/refresh pressure, and recommended timing without port-level detail.</td></tr>
           <tr><td>IT Operations</td><td>Inventory, topology, client analysis, and switch summary</td><td>Connects device inventory, site layout, clients, and operational symptoms.</td></tr>
+          <tr><td>Wireless / Refresh Planning</td><td>AP Spectrum Report</td><td>Provides one AP page per unit with RF bubble, overlap candidates, transmit-power context, and replacement planning notes.</td></tr>
           <tr><td>Security / Compliance</td><td>Security Baseline, MX Firewall/Filtering Policy Backup, CIS 8 Controls, Configuration Coverage</td><td>Shows control posture and the exact backup evidence available for audit review.</td></tr>
           <tr><td>Implementation Team</td><td>Backup Settings Report</td><td>Contains the detailed port/configuration appendix that supports remediation work.</td></tr>
         </tbody>
@@ -4389,6 +4437,7 @@ def build_org_report(
         + end_report_html
     )
     exec_body = cover_html + _schema_banner + exec_html + report_guide_html + end_report_html
+    ap_spectrum_body = cover_html + _schema_banner + ap_spectrum_html + end_report_html
     backup_body = (
         cover_html
         + _schema_banner
@@ -4405,6 +4454,8 @@ def build_org_report(
 
     if report_kind == "exec":
         return exec_body
+    if report_kind in {"ap_spectrum", "ap-spectrum", "ap_interference"}:
+        return ap_spectrum_body
     if report_kind == "backup":
         return backup_body
     return full_body

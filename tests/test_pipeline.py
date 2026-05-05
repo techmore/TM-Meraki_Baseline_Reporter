@@ -274,8 +274,10 @@ class TestReportingEntrypoint:
             "--fixed-now", "2026-05-02T21:30:00",
         ]) == 0
         assert (output / "Demo_Org_Complete_Report_2026-05-02.pdf").exists()
+        assert (output / "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf").exists()
         assert (output / "Demo_Org_2026-05-02_2130_report.pdf").exists()
         assert (output / "report.pdf").exists()
+        assert (output / "report_ap_spectrum.pdf").exists()
 
     def test_reports_dir_writes_run_and_latest_without_html_when_pdf_only(self, monkeypatch, tmp_path):
         from reporting import app
@@ -303,8 +305,11 @@ class TestReportingEntrypoint:
         run_dir = reports / "Demo_Org" / "2026-05-02_2130"
         latest_dir = reports / "latest" / "Demo_Org"
         assert (run_dir / "Demo_Org_Complete_Report_2026-05-02.pdf").exists()
+        assert (run_dir / "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf").exists()
         assert (latest_dir / "Demo_Org_Complete_Report_2026-05-02.pdf").exists()
+        assert (latest_dir / "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf").exists()
         assert (latest_dir / "report.pdf").exists()
+        assert (latest_dir / "report_ap_spectrum.pdf").exists()
         assert not (run_dir / "report.pdf").exists()
         assert not (run_dir / "Demo_Org_2026-05-02_2130_report.pdf").exists()
         assert not list(run_dir.glob("*.html"))
