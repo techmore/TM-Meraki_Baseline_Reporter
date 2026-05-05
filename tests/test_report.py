@@ -908,6 +908,25 @@ class TestBuildOrgReport:
         assert "Current severe interference means the organization may not feel the value of this Wi-Fi 6 AP until RF is remediated" in html
         assert "Executive Summary" not in html
 
+    def test_ap_spectrum_surfaces_channel_utilization_collection_error(self, tmp_path):
+        from reporting.app import build_org_report
+
+        for fn in os.listdir(FIXTURES):
+            src = os.path.join(FIXTURES, fn)
+            dst = tmp_path / fn
+            if os.path.isfile(src):
+                shutil.copy(src, dst)
+
+        (tmp_path / "channel_utilization_by_device.json").write_text(
+            json.dumps({"error": "HTTP 400: networkIds must be an array"}),
+            encoding="utf-8",
+        )
+
+        html = build_org_report(str(tmp_path), "AP Spectrum Test", report_kind="ap_spectrum")
+        assert "Telemetry Collection Warning" in html
+        assert "Channel utilization collection failed for this backup" in html
+        assert "networkIds must be an array" in html
+
     def test_ap_spectrum_distinguishes_external_noise_from_ap_overlap(self, tmp_path):
         from reporting.app import build_org_report
 

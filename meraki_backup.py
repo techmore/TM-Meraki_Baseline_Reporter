@@ -1198,8 +1198,8 @@ def main() -> int:
                     f"/organizations/{org_id}/wireless/rfProfiles/assignments/byDevice",
                     api_key,
                     params={
-                        "productTypes": ["wireless"],
-                        "networkIds": network_id_filter,
+                        "productTypes[]": ["wireless"],
+                        "networkIds[]": network_id_filter,
                     },
                 )
                 if rf_assign_err:
@@ -1526,16 +1526,16 @@ def main() -> int:
             switch_findings = recommend_switch_ports(port_statuses, port_configs)
             poe_summary = summarize_poe_power(port_statuses, TIMESPAN_24H)
             _ch_path = _pf("channel_utilization_by_device.json")
-            if _cache_is_fresh(_ch_path, max_age_h=max_age_h, force=force):
+            if _cache_is_fresh_success(_ch_path, max_age_h=max_age_h, force=force):
                 channel_utilization = _load_json_file(_ch_path)
                 err = None
                 log_line(log_f, "INFO", f"Channel utilization (cached) for {org_name}")
             else:
-                channel_utilization, err = safe_get_one(
+                channel_utilization, err = safe_paged_get(
                     f"/organizations/{org_id}/wireless/devices/channelUtilization/byDevice",
                     api_key,
                     params={
-                        "networkIds": [n.get("id") for n in networks if n.get("id")],
+                        "networkIds[]": [n.get("id") for n in networks if n.get("id")],
                         "timespan": 86400,
                     },
                 )

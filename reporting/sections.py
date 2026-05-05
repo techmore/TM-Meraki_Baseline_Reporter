@@ -441,10 +441,21 @@ def _build_ap_interference_section(
     switch_port_statuses_by_switch: Dict[str, Any],
 ) -> str:
     if not isinstance(channel_util, list):
+        error = (
+            " ".join(str(channel_util.get("error") or "").split())
+            if isinstance(channel_util, dict) and channel_util.get("error")
+            else ""
+        )
+        body = (
+            "Meraki channel-utilization collection failed for this backup, so AP interference cannot be scored until the backup is rerun successfully. "
+            f"Collection error: {_he(error[:259] + '...' if len(error) > 260 else error)}"
+            if error
+            else "No AP channel utilization data was available for interference analysis."
+        )
         return """
     <section id="ap-interference" class="report-section">
       <h2>14. AP Interference Audit</h2>
-      <div class="summary-card"><div class="summary-body">No AP channel utilization data was available for interference analysis.</div></div>
+      <div class="summary-card"><div class="summary-body">""" + body + """</div></div>
     </section>
     """
 
@@ -747,6 +758,17 @@ def _build_ap_spectrum_report(
         for rule in (wireless_design_reference or {}).get("rules", [])
         if isinstance(rule, dict) and rule.get("id")
     }
+    channel_util_error = (
+        str(channel_util.get("error") or "")
+        if isinstance(channel_util, dict) and channel_util.get("error")
+        else ""
+    )
+
+    def _short_error(error: str, limit: int = 260) -> str:
+        if not error:
+            return ""
+        compact = " ".join(str(error).split())
+        return compact if len(compact) <= limit else compact[: limit - 1].rstrip() + "..."
 
     def _source_links(source_ids: List[str]) -> str:
         links = []
@@ -800,7 +822,7 @@ def _build_ap_spectrum_report(
 
     def _bubble(stats: Dict[str, float] | None) -> Tuple[str, str]:
         if not stats:
-            return ("No telemetry", "check-warning")
+            return ("Missing RF data", "check-warning")
         wifi = stats.get("wifi", 0.0)
         total = stats.get("total", 0.0)
         non_wifi = stats.get("non_wifi", 0.0)
@@ -826,7 +848,7 @@ def _build_ap_spectrum_report(
         if not stats:
             return {
                 "rank": 1,
-                "label": "No telemetry",
+                "label": "Missing RF data",
                 "class": "check-warning",
                 "score": 0.0,
                 "action": "Bring AP online or collect fresh channel utilization before making RF decisions.",
@@ -1201,10 +1223,11 @@ def _build_ap_spectrum_report(
                 }
         return {"assoc": 0, "auth": 0, "success": 0}
 
+    channel_util_rows = channel_util if isinstance(channel_util, list) else []
     util_by_serial = {
         row.get("serial"): row
-        for row in channel_util
-        if isinstance(channel_util, list) and isinstance(row, dict) and row.get("serial")
+        for row in channel_util_rows
+        if isinstance(row, dict) and row.get("serial")
     }
     ap_records: List[Dict[str, Any]] = []
     seen: set[str] = set()
@@ -1417,6 +1440,12 @@ def _build_ap_spectrum_report(
         if stats.get("non_wifi", 0.0) >= 15:
             return "Inspect for non-Wi-Fi noise sources near this AP before replacing hardware. New APs will still share the same noisy spectrum. " + power
         if not ap["bands"]:
+            if channel_util_error:
+                return (
+                    "Channel utilization collection failed for this backup, so no RF conclusion should be made from this page yet. "
+                    "Fix the collection error and rerun the backup/report pipeline before judging AP placement or replacement. "
+                    f"Collection error: {_short_error(channel_util_error)}"
+                )
             return "Re-run the backup after the AP is online and reporting channel utilization; no RF decision should be made from missing telemetry alone."
         return "No immediate removal recommendation from current telemetry. Keep this AP in the upgrade plan unless the floor plan shows unnecessary overlap. " + power
 
@@ -1475,6 +1504,17 @@ def _build_ap_spectrum_report(
     )
     if not priority_rows:
         priority_rows = '<tr><td colspan="8" class="empty-state">No APs require immediate RF remediation from this telemetry window.</td></tr>'
+
+    telemetry_warning_html = ""
+    if channel_util_error:
+        telemetry_warning_html = f"""
+      <div class="summary-card">
+        <div class="summary-title">Telemetry Collection Warning</div>
+        <div class="summary-body">
+          Meraki channel-utilization collection failed for this backup, so AP-level RF bubbles cannot be populated until the backup is rerun successfully. Collection error: {_he(_short_error(channel_util_error))}
+        </div>
+      </div>
+        """
 
     ap_pages = []
     for ap in sorted(
@@ -1541,10 +1581,11 @@ def _build_ap_spectrum_report(
         <div class="kpi"><div class="kpi-label">Too Close</div><div class="kpi-value">{len(high_pressure)}</div><div class="kpi-note">High co-channel pressure</div></div>
         <div class="kpi"><div class="kpi-label">RF Noise</div><div class="kpi-value">{len(noise_pressure)}</div><div class="kpi-note">Non-Wi-Fi interference</div></div>
         <div class="kpi"><div class="kpi-label">Severe+</div><div class="kpi-value">{sum(1 for ap in with_telemetry if (ap.get('severity') or {}).get('rank', 0) >= 5)}</div><div class="kpi-note">Fix before refresh decisions</div></div>
-        <div class="kpi"><div class="kpi-label">Missing Data</div><div class="kpi-value">{len(no_telemetry)}</div><div class="kpi-note">Offline/dormant/no channel data</div></div>
+        <div class="kpi"><div class="kpi-label">Missing RF Data</div><div class="kpi-value">{len(no_telemetry)}</div><div class="kpi-note">Offline/dormant/no channel data</div></div>
       </div>
+      {telemetry_warning_html}
       <table class="data">
-        <thead><tr><th>Site</th><th>APs</th><th>Too Close</th><th>Tight Bubble</th><th>No Telemetry</th></tr></thead>
+        <thead><tr><th>Site</th><th>APs</th><th>Too Close</th><th>Tight Bubble</th><th>Missing RF Data</th></tr></thead>
         <tbody>{site_rows}</tbody>
       </table>
       <div class="summary-card">

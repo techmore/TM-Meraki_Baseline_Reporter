@@ -183,6 +183,24 @@ class TestSharedMerakiClient:
         assert "productTypes%5B%5D" not in url
         assert "networkIds%5B%5D" not in url
 
+    def test_build_url_supports_meraki_bracket_array_params(self):
+        url = mc.build_url(
+            "/organizations/1/wireless/devices/channelUtilization/byDevice",
+            {"networkIds[]": ["N_1", "N_2"], "timespan": 86400},
+        )
+        assert "networkIds%5B%5D=N_1" in url
+        assert "networkIds%5B%5D=N_2" in url
+        assert "timespan=86400" in url
+
+    def test_build_url_supports_meraki_multiple_bracket_arrays(self):
+        url = mc.build_url(
+            "/organizations/1/wireless/rfProfiles/assignments/byDevice",
+            {"productTypes[]": ["wireless"], "networkIds[]": ["N_1", "N_2"]},
+        )
+        assert "productTypes%5B%5D=wireless" in url
+        assert "networkIds%5B%5D=N_1" in url
+        assert "networkIds%5B%5D=N_2" in url
+
     def test_shared_paged_get_honors_retry_after(self, monkeypatch):
         sleeps = []
         calls = {"count": 0}
