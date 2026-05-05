@@ -146,6 +146,20 @@ def _cache_is_fresh(path: str, max_age_h: float = 12.0, force: bool = False) -> 
         return False
 
 
+def _payload_has_error(payload: Any) -> bool:
+    return isinstance(payload, dict) and bool(payload.get("error"))
+
+
+def _cache_is_fresh_success(path: str, max_age_h: float = 12.0, force: bool = False) -> bool:
+    """Return True only for fresh JSON that is not an error sentinel from a prior API run."""
+    if not _cache_is_fresh(path, max_age_h=max_age_h, force=force):
+        return False
+    try:
+        return not _payload_has_error(_load_json_file(path))
+    except Exception:
+        return False
+
+
 def _load_json_file(path: str) -> Any:
     with open(path, encoding="utf-8") as f:
         return json.load(f)
@@ -184,6 +198,21 @@ def _granular_cache_fresh(
     force: bool = False,
 ) -> bool:
     return _cache_is_fresh(
+        _artifact_path(org_dir, category, item_id, filename),
+        max_age_h=max_age_h,
+        force=force,
+    )
+
+
+def _granular_cache_fresh_success(
+    org_dir: str,
+    category: str,
+    item_id: str,
+    filename: str,
+    max_age_h: float,
+    force: bool = False,
+) -> bool:
+    return _cache_is_fresh_success(
         _artifact_path(org_dir, category, item_id, filename),
         max_age_h=max_age_h,
         force=force,
@@ -1159,14 +1188,18 @@ def main() -> int:
             if networks:
                 log_line(log_f, "INFO", f"Collecting network-level telemetry for {len(networks)} network(s) in {org_name}")
             _rf_assign_path = _pf("wireless_rf_profile_assignments.json")
-            if _cache_is_fresh(_rf_assign_path, max_age_h=max_age_h, force=force):
+            network_id_filter = [n.get("id") for n in networks if n.get("id")]
+            if _cache_is_fresh_success(_rf_assign_path, max_age_h=max_age_h, force=force):
                 wireless_rf_profile_assignments = _load_json_file(_rf_assign_path)
                 log_line(log_f, "INFO", f"Wireless RF profile assignments (cached) for {org_name}")
             else:
                 wireless_rf_profile_assignments, rf_assign_err = safe_paged_get(
                     f"/organizations/{org_id}/wireless/rfProfiles/assignments/byDevice",
                     api_key,
-                    params={"productTypes[]": ["wireless"]},
+                    params={
+                        "productTypes": ["wireless"],
+                        "networkIds": network_id_filter,
+                    },
                 )
                 if rf_assign_err:
                     level = "INFO" if is_capability_error(rf_assign_err) else "WARN"
@@ -1221,11 +1254,20 @@ def main() -> int:
                     ),
                     "Clients overview failed",
                 )
-                wireless_rf_profiles[net_id] = _load_or_fetch_net(
-                    "wireless_rf_profiles.json",
-                    lambda: safe_paged_get(f"/networks/{net_id}/wireless/rfProfiles", api_key),
-                    "Wireless rfProfiles failed",
-                )
+                if _granular_cache_fresh_success(org_dir, "networks", net_id, "wireless_rf_profiles.json", max_age_h, force):
+                    wireless_rf_profiles[net_id] = _read_granular_json(org_dir, "networks", net_id, "wireless_rf_profiles.json")
+                else:
+                    wireless_rf_profiles[net_id], rf_profiles_err = safe_paged_get(f"/networks/{net_id}/wireless/rfProfiles", api_key)
+                    if rf_profiles_err:
+                        wireless_rf_profiles[net_id] = {"error": rf_profiles_err}
+                        log_line(log_f, "WARN", f"Wireless rfProfiles failed for network {net_id}: {rf_profiles_err}")
+                    _write_granular_json(
+                        org_dir,
+                        "networks",
+                        net_id,
+                        "wireless_rf_profiles.json",
+                        wireless_rf_profiles[net_id],
+                    )
                 wireless_settings[net_id] = _load_or_fetch_net(
                     "wireless_settings.json",
                     lambda: safe_get_one(f"/networks/{net_id}/wireless/settings", api_key),
@@ -1481,7 +1523,7 @@ def main() -> int:
                     f"/organizations/{org_id}/wireless/devices/channelUtilization/byDevice",
                     api_key,
                     params={
-                        "networkIds[]": [n.get("id") for n in networks if n.get("id")],
+                        "networkIds": [n.get("id") for n in networks if n.get("id")],
                         "timespan": 86400,
                     },
                 )

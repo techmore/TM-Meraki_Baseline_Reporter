@@ -50,6 +50,17 @@ class TestCacheIsFresh:
         os.utime(str(p), (recent_time, recent_time))
         assert mb._cache_is_fresh(str(p), max_age_h=12) is True
 
+    def test_fresh_error_payload_is_not_success_cache(self, tmp_path):
+        p = tmp_path / "rf_assignments.json"
+        p.write_text(json.dumps({"error": "temporary API failure"}))
+        assert mb._cache_is_fresh(str(p), max_age_h=12) is True
+        assert mb._cache_is_fresh_success(str(p), max_age_h=12) is False
+
+    def test_fresh_success_payload_is_success_cache(self, tmp_path):
+        p = tmp_path / "rf_assignments.json"
+        p.write_text(json.dumps([{"serial": "Q2XX-TEST-0001"}]))
+        assert mb._cache_is_fresh_success(str(p), max_age_h=12) is True
+
 
 # ── write_json / _load_json_file ──────────────────────────────────────────────
 
@@ -160,6 +171,17 @@ class TestSharedMerakiClient:
         assert url.startswith("https://api.meraki.com/api/v1/organizations?")
         assert "perPage=5" in url
         assert "foo=bar" in url
+
+    def test_build_url_repeats_array_params_without_bracket_suffix(self):
+        url = mc.build_url(
+            "/organizations/1/wireless/rfProfiles/assignments/byDevice",
+            {"productTypes": ["wireless"], "networkIds": ["N_1", "N_2"]},
+        )
+        assert "productTypes=wireless" in url
+        assert "networkIds=N_1" in url
+        assert "networkIds=N_2" in url
+        assert "productTypes%5B%5D" not in url
+        assert "networkIds%5B%5D" not in url
 
     def test_shared_paged_get_honors_retry_after(self, monkeypatch):
         sleeps = []
