@@ -3315,6 +3315,78 @@ def build_org_report(
     smx_max = smx_ref.get("max_watts") if isinstance(smx_ref, dict) else None
     smx_unit = smx_ref.get("unit_cost") if isinstance(smx_ref, dict) else None
     smx_ext = smx_ref.get("external_battery_unit_cost") if isinstance(smx_ref, dict) else None
+    ups_switch_items = ups_power_plan.get("switches", []) if isinstance(ups_power_plan.get("switches"), list) else []
+    target_stacks = [
+        ((item.get("runtimeEstimates") or {}).get("SMX2200RMLV2UTargetStack") or {})
+        for item in ups_switch_items
+        if isinstance(item, dict)
+    ]
+    target_costs = [
+        float(stack.get("estimatedCost"))
+        for stack in target_stacks
+        if isinstance(stack.get("estimatedCost"), (int, float))
+    ]
+    total_target_cost = sum(target_costs) if target_costs else None
+    max_external_batteries = max(
+        [int(stack.get("externalBatteryCount") or 0) for stack in target_stacks if stack.get("externalBatteryCount") is not None],
+        default=0,
+    )
+    no_target_stack_count = sum(1 for stack in target_stacks if stack.get("runtimeMinutes") is None)
+    bx_runtime_minutes = [
+        float(((item.get("runtimeEstimates") or {}).get("BX1500M") or {}).get("runtimeMinutes"))
+        for item in ups_switch_items
+        if isinstance((((item.get("runtimeEstimates") or {}).get("BX1500M") or {}).get("runtimeMinutes")), (int, float))
+    ]
+    smx_base_runtime_minutes = [
+        float(((item.get("runtimeEstimates") or {}).get("SMX2200RMLV2UBase") or {}).get("runtimeMinutes"))
+        for item in ups_switch_items
+        if isinstance((((item.get("runtimeEstimates") or {}).get("SMX2200RMLV2UBase") or {}).get("runtimeMinutes")), (int, float))
+    ]
+    smx_base_below_target_count = sum(1 for mins in smx_base_runtime_minutes if mins < ups_target_hours * 60)
+    site_plan_summary = ups_power_plan.get("sites") if isinstance(ups_power_plan.get("sites"), dict) else {}
+    heaviest_site = ""
+    if site_plan_summary:
+        heaviest_site, _heaviest_data = max(
+            site_plan_summary.items(),
+            key=lambda item: float((item[1] or {}).get("totalSizingLoadWatts") or 0) if isinstance(item[1], dict) else 0,
+        )
+    battery_recommendations = []
+    if ups_rows:
+        battery_recommendations.append(
+            f"Use the Smart-UPS X stack as the planning standard for network closets that need the {ups_target_hours:g} hour runtime target; the BX1500M should be treated as a short-runtime single-switch fallback."
+        )
+        if total_target_cost is not None:
+            battery_recommendations.append(
+                f"Budget approximately {_format_money(total_target_cost)} for the modeled target-runtime switch stacks in this report, before installation, electrical work, tax, shipping, or spares."
+            )
+        if smx_base_below_target_count:
+            battery_recommendations.append(
+                f"The base SMX2200RMLV2U alone is below the {ups_target_hours:g} hour target for {smx_base_below_target_count} switch load(s), so external battery modules are required where extended runtime is expected."
+            )
+        if max_external_batteries:
+            battery_recommendations.append(
+                f"The largest modeled stack requires {max_external_batteries} external battery module(s); validate rack space, circuit capacity, and battery maintenance before quoting."
+            )
+        if no_target_stack_count:
+            battery_recommendations.append(
+                f"{no_target_stack_count} switch load(s) did not reach the target with the available runtime chart, so those closets need manual UPS sizing."
+            )
+        if heaviest_site:
+            battery_recommendations.append(
+                f"Highest aggregate sizing load is at {heaviest_site}; start validation there before standardizing smaller closets."
+            )
+    else:
+        battery_recommendations.append("No switch loads were available, so no UPS purchase action should be taken from this report yet.")
+    bx_window = (
+        f"{_format_runtime_minutes(min(bx_runtime_minutes))} to {_format_runtime_minutes(max(bx_runtime_minutes))}"
+        if bx_runtime_minutes
+        else "not available"
+    )
+    smx_base_window = (
+        f"{_format_runtime_minutes(min(smx_base_runtime_minutes))} to {_format_runtime_minutes(max(smx_base_runtime_minutes))}"
+        if smx_base_runtime_minutes
+        else "not available"
+    )
     ups_source_links = ""
     if isinstance(ups_meta, dict) and isinstance(ups_meta.get("sources"), list):
         links = []
@@ -3350,6 +3422,16 @@ def build_org_report(
           <div class="kpi-label">Planning Target</div>
           <div class="kpi-value">{ups_target_hours:g} hours</div>
           <div class="kpi-note">Smart-UPS external battery stack</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-title">Executive Recommendation</div>
+        <div class="summary-body">
+          The practical planning recommendation is to use the APC Smart-UPS X plus external battery modules for closets where extended runtime matters, and reserve the BX1500M class for small, non-critical edge switches where short runtime is acceptable.
+          <ul>
+            {''.join(f'<li>{_he(point)}</li>' for point in battery_recommendations)}
+          </ul>
+          <strong>Runtime read:</strong> BX1500M estimated range is {_he(bx_window)} across modeled switch loads; base SMX2200RMLV2U estimated range is {_he(smx_base_window)} before adding external modules.
         </div>
       </div>
       <div class="summary-card">

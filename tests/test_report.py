@@ -248,12 +248,15 @@ class TestBuildOrgReport:
         assert "10% planning buffer" in html
         assert "ups_switch_power_plan.json" in html
         assert "1 UPS + 1 external battery module" in html
+        assert "Executive Recommendation" in html
+        assert "Use the Smart-UPS X stack as the planning standard" in html
 
         battery_html = build_org_report(str(tmp_path), "UPS Test", report_kind="battery_backup")
         assert "Battery Backup Runtime Planning" in battery_html
         assert "UPS Runtime Estimate by Switch" in battery_html
         assert "Core-SW-1 (Q2SW-TEST-0001)" in battery_html
         assert "97.5 W" in battery_html
+        assert "Executive Recommendation" in battery_html
         assert "Executive Summary" not in battery_html
         assert "$3,487.04" in html
 
@@ -810,6 +813,19 @@ class TestBuildOrgReport:
             if os.path.isfile(src):
                 shutil.copy(src, dst)
 
+        devices = json.loads((tmp_path / "devices_availabilities.json").read_text(encoding="utf-8"))
+        devices.append(
+            {
+                "serial": "Q2AP-TEST-0003",
+                "name": "AP-1F-03",
+                "productType": "wireless",
+                "model": "MR46",
+                "status": "online",
+                "networkId": "N_test_001",
+            }
+        )
+        (tmp_path / "devices_availabilities.json").write_text(json.dumps(devices), encoding="utf-8")
+
         (tmp_path / "channel_utilization_by_device.json").write_text(
             json.dumps(
                 [
@@ -836,6 +852,11 @@ class TestBuildOrgReport:
                                 "total": {"percentage": 61},
                             }
                         ],
+                    },
+                    {
+                        "serial": "Q2AP-TEST-0003",
+                        "network": {"id": "N_test_001"},
+                        "byBand": [],
                     },
                 ]
             ),
@@ -901,7 +922,11 @@ class TestBuildOrgReport:
         html = build_org_report(str(tmp_path), "AP Spectrum Test", report_kind="ap_spectrum")
         assert "AP Spectrum Availability &amp; Interference Report" in html
         assert html.count("ap-unit-page") >= 2
+        assert "Executive Summary / Recommended Action" in html
         assert "Meraki Standards Basis" in html
+        assert "RF Telemetry Gaps" in html
+        assert "Online Missing RF" in html
+        assert "Online but no channel samples were returned" in html
         assert "High Density Wi-Fi Deployments" in html
         assert "Wireless Event Log Context" in html
         assert "association_fail" in html
@@ -913,7 +938,7 @@ class TestBuildOrgReport:
         assert "RF / Hardware Fit" in html
         assert "Wi-Fi 6 / 802.11ax / 2.4, 5 GHz" in html
         assert "Current severe interference means the organization may not feel the value of this Wi-Fi 6 AP until RF is remediated" in html
-        assert "Executive Summary" not in html
+        assert "Network Overview" not in html
 
     def test_ap_spectrum_surfaces_channel_utilization_collection_error(self, tmp_path):
         from reporting.app import build_org_report

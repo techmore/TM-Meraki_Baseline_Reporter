@@ -1117,6 +1117,12 @@ def _build_ap_spectrum_report(
         _, exact, name = _assigned_profile(ap)
         return name if exact else f"{name} (fallback)" if name != "Profile assignment not captured" else name
 
+    def _ap_status(ap: Dict[str, Any]) -> str:
+        return str(ap.get("status") or "unknown").strip().lower() or "unknown"
+
+    def _is_inactive_ap(ap: Dict[str, Any]) -> bool:
+        return _ap_status(ap) in {"dormant", "offline"}
+
     def _ap_capability(ap: Dict[str, Any]) -> Dict[str, Any]:
         model = str(ap.get("model") or "")
         ref = catalog_models.get(model) if isinstance(catalog_models, dict) else None
@@ -1326,16 +1332,29 @@ def _build_ap_spectrum_report(
     tight_pressure = [ap for ap in with_telemetry if "Tight" in ap["bubble"]]
     noise_pressure = [ap for ap in with_telemetry if "non-Wi-Fi" in ap["bubble"] or "External RF" in ap["bubble"]]
     no_telemetry = [ap for ap in ap_records if not ap["bands"]]
+    inactive_no_telemetry = [ap for ap in no_telemetry if _is_inactive_ap(ap)]
+    online_no_telemetry = [ap for ap in no_telemetry if not _is_inactive_ap(ap)]
+    severe_plus = [ap for ap in with_telemetry if (ap.get("severity") or {}).get("rank", 0) >= 5]
+    six_ghz_value_blocked = [
+        ap for ap in ap_records
+        if _ap_capability(ap).get("sixGhzCapable")
+        and "6 GHz capable AP, but" in _value_assessment(ap)
+    ]
     site_counts: Dict[str, Dict[str, int]] = {}
     for ap in ap_records:
-        site = site_counts.setdefault(ap["site"], {"aps": 0, "high": 0, "tight": 0, "missing": 0})
+        site = site_counts.setdefault(
+            ap["site"],
+            {"aps": 0, "high": 0, "tight": 0, "missing_online": 0, "inactive_missing": 0},
+        )
         site["aps"] += 1
         if ap in high_pressure:
             site["high"] += 1
         if ap in tight_pressure:
             site["tight"] += 1
-        if not ap["bands"]:
-            site["missing"] += 1
+        if ap in online_no_telemetry:
+            site["missing_online"] += 1
+        if ap in inactive_no_telemetry:
+            site["inactive_missing"] += 1
 
     site_rows = "".join(
         "<tr>"
@@ -1343,10 +1362,85 @@ def _build_ap_spectrum_report(
         f"<td>{counts['aps']}</td>"
         f"<td>{counts['high']}</td>"
         f"<td>{counts['tight']}</td>"
-        f"<td>{counts['missing']}</td>"
+        f"<td>{counts['missing_online']}</td>"
+        f"<td>{counts['inactive_missing']}</td>"
         "</tr>"
         for site, counts in sorted(site_counts.items())
     )
+
+    def _ap_list(items: List[Dict[str, Any]], limit: int = 4) -> str:
+        names = [_he(str(ap.get("name") or ap.get("serial") or "Unknown AP")) for ap in items[:limit]]
+        if len(items) > limit:
+            names.append(f"{len(items) - limit} more")
+        return ", ".join(names) if names else "none"
+
+    executive_points = []
+    if severe_plus:
+        executive_points.append(
+            f"Remediate {len(severe_plus)} severe/critical AP RF finding(s) before judging refresh hardware value. Highest priority: {_ap_list(severe_plus)}."
+        )
+    elif high_pressure or tight_pressure or noise_pressure:
+        executive_points.append(
+            f"Tune RF before a one-for-one replacement: {len(high_pressure)} too-close AP(s), {len(tight_pressure)} tight-bubble AP(s), and {len(noise_pressure)} AP(s) with non-Wi-Fi noise were observed."
+        )
+    else:
+        executive_points.append("No severe AP spectrum remediation is indicated by this telemetry window.")
+    if noise_pressure:
+        executive_points.append(
+            f"Treat {len(noise_pressure)} AP(s) as possible environmental RF-noise cases; use Dashboard spectrum tools or a field survey before removing APs."
+        )
+    if high_pressure:
+        executive_points.append(
+            f"Validate floor plans for {len(high_pressure)} AP(s) showing excessive co-channel pressure; removal, relocation, or lower transmit power may help more than adding hardware."
+        )
+    if six_ghz_value_blocked:
+        executive_points.append(
+            f"{len(six_ghz_value_blocked)} 6 GHz-capable AP(s) appear constrained by RF/SSID profile settings, so verify 6 GHz enablement before assuming the site is getting full Wi-Fi 6E/7 value."
+        )
+    if online_no_telemetry:
+        executive_points.append(
+            f"{len(online_no_telemetry)} online/unknown AP(s) returned no per-band channel samples. Re-run collection and check Dashboard/AP health before making placement decisions for: {_ap_list(online_no_telemetry)}."
+        )
+    if inactive_no_telemetry:
+        executive_points.append(
+            f"{len(inactive_no_telemetry)} dormant/offline AP(s) did not return RF samples. Treat them as inventory cleanup or reactivation candidates, not active RF design evidence."
+        )
+
+    executive_summary_html = f"""
+      <div class="summary-card">
+        <div class="summary-title">Executive Summary / Recommended Action</div>
+        <div class="summary-body">
+          This site has <strong>{len(with_telemetry)}</strong> AP(s) with usable RF telemetry out of <strong>{len(ap_records)}</strong> AP inventory record(s). The recommended action is to fix severe RF noise/overlap first, clean up dormant inventory, then use the remaining AP pages as the refresh planning baseline.
+          <ul>
+            {''.join(f'<li>{point}</li>' for point in executive_points)}
+          </ul>
+        </div>
+      </div>
+    """
+
+    def _missing_rf_action(ap: Dict[str, Any]) -> str:
+        status = _ap_status(ap)
+        if status == "online":
+            return "Online but no channel samples were returned; rerun collection, verify Dashboard channel utilization, and inspect AP health."
+        if status == "dormant":
+            return "Dormant inventory; exclude from active RF conclusions until it checks in again."
+        if status == "offline":
+            return "Offline during collection; restore or retire before using it in RF planning."
+        return "No channel samples returned; verify status and rerun collection before making RF decisions."
+
+    missing_rf_rows = "".join(
+        "<tr>"
+        f"<td>{_he(ap['site'])}</td>"
+        f"<td>{_he(ap['name'])}<br><code>{_he(ap['serial'])}</code></td>"
+        f"<td>{_he(ap['model'] or 'Unknown')}</td>"
+        f"<td>{_he(ap['status'])}</td>"
+        f"<td>{_he(_profile_name(ap))}</td>"
+        f"<td>{_he(_missing_rf_action(ap))}</td>"
+        "</tr>"
+        for ap in sorted(no_telemetry, key=lambda item: (_is_inactive_ap(item), item["site"], item["name"]))[:40]
+    )
+    if not missing_rf_rows:
+        missing_rf_rows = '<tr><td colspan="6" class="empty-state">All AP inventory records returned usable per-band RF telemetry in this backup.</td></tr>'
 
     def _candidate_rows(ap: Dict[str, Any]) -> str:
         band = ap["worst_band"]
@@ -1446,7 +1540,15 @@ def _build_ap_spectrum_report(
                     "Fix the collection error and rerun the backup/report pipeline before judging AP placement or replacement. "
                     f"Collection error: {_short_error(channel_util_error)}"
                 )
-            return "Re-run the backup after the AP is online and reporting channel utilization; no RF decision should be made from missing telemetry alone."
+            if _is_inactive_ap(ap):
+                return (
+                    f"This AP was {_ap_status(ap)} and did not return per-band RF samples. "
+                    "Do not count it as active RF coverage or active interference until it is restored and reporting channel utilization."
+                )
+            return (
+                "This AP did not return per-band RF samples even though it was not marked dormant/offline in the inventory. "
+                "Re-run collection and check Dashboard channel utilization/AP health before making placement or replacement decisions."
+            )
         return "No immediate removal recommendation from current telemetry. Keep this AP in the upgrade plan unless the floor plan shows unnecessary overlap. " + power
 
     def _standards_for_ap(ap: Dict[str, Any]) -> List[str]:
@@ -1580,13 +1682,20 @@ def _build_ap_spectrum_report(
         <div class="kpi"><div class="kpi-label">RF Telemetry</div><div class="kpi-value">{len(with_telemetry)}</div><div class="kpi-note">APs with channel utilization</div></div>
         <div class="kpi"><div class="kpi-label">Too Close</div><div class="kpi-value">{len(high_pressure)}</div><div class="kpi-note">High co-channel pressure</div></div>
         <div class="kpi"><div class="kpi-label">RF Noise</div><div class="kpi-value">{len(noise_pressure)}</div><div class="kpi-note">Non-Wi-Fi interference</div></div>
-        <div class="kpi"><div class="kpi-label">Severe+</div><div class="kpi-value">{sum(1 for ap in with_telemetry if (ap.get('severity') or {}).get('rank', 0) >= 5)}</div><div class="kpi-note">Fix before refresh decisions</div></div>
-        <div class="kpi"><div class="kpi-label">Missing RF Data</div><div class="kpi-value">{len(no_telemetry)}</div><div class="kpi-note">Offline/dormant/no channel data</div></div>
+        <div class="kpi"><div class="kpi-label">Severe+</div><div class="kpi-value">{len(severe_plus)}</div><div class="kpi-note">Fix before refresh decisions</div></div>
+        <div class="kpi"><div class="kpi-label">Online Missing RF</div><div class="kpi-value">{len(online_no_telemetry)}</div><div class="kpi-note">Needs collection/AP health review</div></div>
+        <div class="kpi"><div class="kpi-label">Dormant/Offline</div><div class="kpi-value">{len(inactive_no_telemetry)}</div><div class="kpi-note">Inventory cleanup / inactive APs</div></div>
       </div>
+      {executive_summary_html}
       {telemetry_warning_html}
       <table class="data">
-        <thead><tr><th>Site</th><th>APs</th><th>Too Close</th><th>Tight Bubble</th><th>Missing RF Data</th></tr></thead>
+        <thead><tr><th>Site</th><th>APs</th><th>Too Close</th><th>Tight Bubble</th><th>Online Missing RF</th><th>Dormant/Offline Missing</th></tr></thead>
         <tbody>{site_rows}</tbody>
+      </table>
+      <h3>RF Telemetry Gaps</h3>
+      <table class="data dense">
+        <thead><tr><th>Site</th><th>AP</th><th>Model</th><th>Status</th><th>RF Profile</th><th>Action</th></tr></thead>
+        <tbody>{missing_rf_rows}</tbody>
       </table>
       <div class="summary-card">
         <div class="summary-title">How To Read The Bubble Scale</div>
