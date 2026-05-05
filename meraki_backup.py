@@ -1140,6 +1140,7 @@ def main() -> int:
             wireless_mesh_statuses = {}
             clients_overview = {}
             wireless_rf_profiles = {}
+            wireless_rf_profile_assignments = {}
             wireless_settings = {}
             network_clients = {}
             wireless_clients = {}
@@ -1157,6 +1158,24 @@ def main() -> int:
                     appliances_by_network.setdefault(net_id_for_appliance, []).append(appliance)
             if networks:
                 log_line(log_f, "INFO", f"Collecting network-level telemetry for {len(networks)} network(s) in {org_name}")
+            _rf_assign_path = _pf("wireless_rf_profile_assignments.json")
+            if _cache_is_fresh(_rf_assign_path, max_age_h=max_age_h, force=force):
+                wireless_rf_profile_assignments = _load_json_file(_rf_assign_path)
+                log_line(log_f, "INFO", f"Wireless RF profile assignments (cached) for {org_name}")
+            else:
+                wireless_rf_profile_assignments, rf_assign_err = safe_paged_get(
+                    f"/organizations/{org_id}/wireless/rfProfiles/assignments/byDevice",
+                    api_key,
+                    params={"productTypes[]": ["wireless"]},
+                )
+                if rf_assign_err:
+                    level = "INFO" if is_capability_error(rf_assign_err) else "WARN"
+                    log_line(log_f, level, f"Wireless RF profile assignments unavailable for org {org_id}: {rf_assign_err}")
+                    wireless_rf_profile_assignments = {"error": rf_assign_err}
+                write_json(
+                    _rf_assign_path,
+                    wireless_rf_profile_assignments,
+                )
             for idx, net in enumerate(networks, start=1):
                 net_id = net.get("id")
                 if not net_id:
@@ -1427,6 +1446,7 @@ def main() -> int:
             write_json(_pf("wireless_mesh_statuses.json"), wireless_mesh_statuses)
             write_json(_pf("clients_overview.json"), clients_overview)
             write_json(_pf("wireless_rf_profiles.json"), wireless_rf_profiles)
+            write_json(_pf("wireless_rf_profile_assignments.json"), wireless_rf_profile_assignments)
             write_json(_pf("wireless_settings.json"), wireless_settings)
             write_json(_pf("network_clients.json"), network_clients)
             write_json(_pf("wireless_clients.json"), wireless_clients)

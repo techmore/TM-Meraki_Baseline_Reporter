@@ -789,6 +789,7 @@ def build_org_report(
     clients_overview_raw = load_json(os.path.join(org_dir, "clients_overview.json")) or {}
     licensing_data = load_json(os.path.join(org_dir, "licensing.json")) or {}
     rf_profiles = load_json(os.path.join(org_dir, "wireless_rf_profiles.json")) or {}
+    rf_profile_assignments = load_json(os.path.join(org_dir, "wireless_rf_profile_assignments.json")) or {}
     inventory_devices = load_json(os.path.join(org_dir, "inventory_devices.json")) or []
     firmware_upgrades = load_json(os.path.join(org_dir, "firmware_upgrades.json")) or []
     wireless_settings = load_json(os.path.join(org_dir, "wireless_settings.json")) or {}
@@ -1503,6 +1504,7 @@ def build_org_report(
         channel_util,
         wireless_stats,
         rf_profiles,
+        rf_profile_assignments,
     )
     config_coverage_html = _build_config_coverage_section(org_dir, networks)
     budget_forecast_html = _build_budget_forecast_section(inventory_summary, pricing_payload)

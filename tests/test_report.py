@@ -839,6 +839,7 @@ class TestBuildOrgReport:
                 {
                     "N_test_001": [
                         {
+                            "id": "rf-low",
                             "name": "Classroom Low Power",
                             "fiveGhzSettings": {"minPower": 8, "maxPower": 17},
                         }
@@ -847,15 +848,105 @@ class TestBuildOrgReport:
             ),
             encoding="utf-8",
         )
+        (tmp_path / "wireless_rf_profile_assignments.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "items": [
+                            {
+                                "network": {"id": "N_test_001"},
+                                "name": "AP-1F-01",
+                                "serial": "Q2AP-TEST-0001",
+                                "model": "MR46",
+                                "rfProfile": {
+                                    "id": "rf-low",
+                                    "name": "Classroom Low Power",
+                                    "isIndoorDefault": False,
+                                    "isOutdoorDefault": False,
+                                },
+                            }
+                        ]
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
 
         html = build_org_report(str(tmp_path), "AP Spectrum Test", report_kind="ap_spectrum")
         assert "AP Spectrum Availability &amp; Interference Report" in html
         assert html.count("ap-unit-page") >= 2
         assert "WAY TOO CLOSE / saturated RF bubble" in html
-        assert "Suspected Overlap Candidates" in html
-        assert "Classroom Low Power" in html
+        assert "Same-Band Context / Overlap Candidates" in html
+        assert "Current RF profile: Classroom Low Power (exact AP assignment)" in html
         assert "remove, disable, or relocate one AP" in html
+        assert "Recommended RF Work Queue" in html
         assert "Executive Summary" not in html
+
+    def test_ap_spectrum_distinguishes_external_noise_from_ap_overlap(self, tmp_path):
+        from reporting.app import build_org_report
+
+        for fn in os.listdir(FIXTURES):
+            src = os.path.join(FIXTURES, fn)
+            dst = tmp_path / fn
+            if os.path.isfile(src):
+                shutil.copy(src, dst)
+
+        (tmp_path / "channel_utilization_by_device.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "serial": "Q2AP-TEST-0001",
+                        "network": {"id": "N_test_001"},
+                        "byBand": [
+                            {
+                                "band": "5",
+                                "wifi": {"percentage": 15},
+                                "nonWifi": {"percentage": 82},
+                                "total": {"percentage": 97},
+                            }
+                        ],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "wireless_rf_profiles.json").write_text(
+            json.dumps(
+                {
+                    "N_test_001": [
+                        {
+                            "id": "rf-stage",
+                            "name": "Auditorium",
+                            "fiveGhzSettings": {
+                                "minPower": 8,
+                                "maxPower": 14,
+                                "minBitrate": 24,
+                                "channelWidth": "auto",
+                                "validAutoChannels": [36, 40, 44, 48],
+                            },
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "wireless_rf_profile_assignments.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "serial": "Q2AP-TEST-0001",
+                        "rfProfile": {"id": "rf-stage", "name": "Auditorium"},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        html = build_org_report(str(tmp_path), "AP Spectrum Noise Test", report_kind="ap_spectrum")
+        assert "External RF saturation / investigate noise" in html
+        assert "Worst symptom is non-Wi-Fi interference, not AP-to-AP overlap" in html
+        assert "Do not remove or replace APs solely because this band is saturated by non-Wi-Fi energy" in html
+        assert "Current RF profile: Auditorium (exact AP assignment); 8 dBm min; 14 dBm max; low power ceiling" in html
 
     def test_dated_complete_report_filename(self):
         from reporting.app import _dated_report_name

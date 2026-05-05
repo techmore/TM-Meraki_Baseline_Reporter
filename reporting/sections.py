@@ -727,6 +727,7 @@ def _build_ap_spectrum_report(
     channel_util: Any,
     wireless_stats: Dict[str, Any],
     rf_profiles: Any,
+    rf_profile_assignments: Any = None,
 ) -> str:
     def _band_stats(row: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
         bands: Dict[str, Dict[str, float]] = {}
@@ -747,25 +748,115 @@ def _build_ap_spectrum_report(
         wifi = stats.get("wifi", 0.0)
         total = stats.get("total", 0.0)
         non_wifi = stats.get("non_wifi", 0.0)
-        if wifi >= 55 or total >= 75:
+        if non_wifi >= 50 and total >= 75:
+            return ("External RF saturation / investigate noise", "check-fail")
+        if non_wifi >= 25:
+            return ("High non-Wi-Fi noise / inspect source", "check-fail")
+        if wifi >= 55:
             return ("WAY TOO CLOSE / saturated RF bubble", "check-fail")
-        if wifi >= 40 or total >= 60:
+        if wifi >= 40:
             return ("Too close / co-channel pressure", "check-fail")
-        if wifi >= 25 or total >= 45 or non_wifi >= 15:
+        if non_wifi >= 15:
+            return ("Non-Wi-Fi noise / inspect source", "check-warning")
+        if total >= 60:
+            return ("Saturated airtime / mixed interference", "check-fail")
+        if wifi >= 25 or total >= 45:
             return ("Tight bubble / tune placement", "check-warning")
         if wifi >= 10 or total >= 25:
             return ("Within range / acceptable overlap", "check-pass")
         return ("Clean bubble / no overlap symptom", "check-pass")
 
-    def _power_context(net_id: str, band: str) -> str:
+    def _flatten_assignments(raw: Any) -> List[Dict[str, Any]]:
+        if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+            return [item for item in raw["items"] if isinstance(item, dict)]
+        if not isinstance(raw, list):
+            return []
+        rows: List[Dict[str, Any]] = []
+        for item in raw:
+            if isinstance(item, dict) and isinstance(item.get("items"), list):
+                rows.extend(child for child in item["items"] if isinstance(child, dict))
+            elif isinstance(item, dict):
+                rows.append(item)
+        return rows
+
+    assignment_by_serial = {
+        str(item.get("serial")): item
+        for item in _flatten_assignments(rf_profile_assignments)
+        if item.get("serial")
+    }
+
+    def _profile_settings_by_id(net_id: str) -> Dict[str, Dict[str, Any]]:
+        profiles = rf_profiles.get(net_id) if isinstance(rf_profiles, dict) else None
+        if not isinstance(profiles, list):
+            return {}
+        return {
+            str(profile.get("id")): profile
+            for profile in profiles
+            if isinstance(profile, dict) and profile.get("id")
+        }
+
+    def _format_profile_power(profile: Dict[str, Any], band: str, exact: bool) -> str:
         band_map = {
             "2.4": "twoFourGhzSettings",
             "5": "fiveGhzSettings",
             "6": "sixGhzSettings",
         }
+        field = band_map.get(str(band))
+        settings = profile.get(field) if field else None
+        if not isinstance(settings, dict):
+            return "RF profile power not available"
+        min_power = settings.get("minPower")
+        max_power = settings.get("maxPower")
+        min_text = f"{float(min_power):.0f} dBm min" if isinstance(min_power, (int, float)) else "min n/a"
+        max_text = f"{float(max_power):.0f} dBm max" if isinstance(max_power, (int, float)) else "max n/a"
+        cap_note = ""
+        if isinstance(max_power, (int, float)) and max_power <= 17:
+            cap_note = "; low power ceiling"
+        elif isinstance(max_power, (int, float)) and max_power <= 22:
+            cap_note = "; moderate power ceiling"
+        elif isinstance(max_power, (int, float)):
+            cap_note = "; high power ceiling"
+        bitrate = settings.get("minBitrate")
+        width = settings.get("channelWidth")
+        channels = settings.get("validAutoChannels")
+        details = []
+        if isinstance(bitrate, (int, float)):
+            details.append(f"{float(bitrate):.0f} Mbps min bitrate")
+        if width:
+            details.append(f"{width} channel width")
+        if isinstance(channels, list) and channels:
+            details.append(f"{len(channels)} auto channel(s)")
+        name = profile.get("name") or "Unnamed RF profile"
+        source = "exact AP assignment" if exact else "default/profile fallback"
+        suffix = f"; {', '.join(details)}" if details else ""
+        return f"Current RF profile: {name} ({source}); {min_text}; {max_text}{cap_note}{suffix}"
+
+    def _power_context(ap: Dict[str, Any], band: str) -> str:
+        net_id = ap["network_id"]
+        assignment = assignment_by_serial.get(ap["serial"])
+        assigned_profile = assignment.get("rfProfile") if isinstance(assignment, dict) else None
+        assigned_profile_id = str(assigned_profile.get("id")) if isinstance(assigned_profile, dict) and assigned_profile.get("id") else ""
+        if assigned_profile_id:
+            profile = _profile_settings_by_id(net_id).get(assigned_profile_id)
+            if profile:
+                return _format_profile_power(profile, band, exact=True)
+            if isinstance(assigned_profile, dict):
+                return f"Current RF profile: {assigned_profile.get('name') or assigned_profile_id} (exact AP assignment); settings detail not in backup"
+
         profiles = rf_profiles.get(net_id) if isinstance(rf_profiles, dict) else None
         if not isinstance(profiles, list) or not profiles:
             return "RF profile power not available"
+        default_profiles = [
+            profile for profile in profiles
+            if isinstance(profile, dict) and (profile.get("isIndoorDefault") or profile.get("isOutdoorDefault"))
+        ]
+        if len(default_profiles) == 1:
+            return _format_profile_power(default_profiles[0], band, exact=False)
+        band_map = {
+            "2.4": "twoFourGhzSettings",
+            "5": "fiveGhzSettings",
+            "6": "sixGhzSettings",
+        }
         field = band_map.get(str(band))
         values = []
         names = []
@@ -796,7 +887,14 @@ def _build_ap_spectrum_report(
         profile_note = f" across {len(values)} RF profile(s)"
         if names:
             profile_note += f": {', '.join(names[:2])}{'…' if len(names) > 2 else ''}"
-        return f"{min_text}; {max_text}{cap_note}{profile_note}"
+        return f"RF profile range; {min_text}; {max_text}{cap_note}{profile_note}"
+
+    def _profile_name(ap: Dict[str, Any]) -> str:
+        assignment = assignment_by_serial.get(ap["serial"])
+        profile = assignment.get("rfProfile") if isinstance(assignment, dict) else None
+        if isinstance(profile, dict) and profile.get("name"):
+            return str(profile.get("name"))
+        return "Profile assignment not captured"
 
     def _client_stats(serial: str, net_id: str) -> Dict[str, int]:
         for item in wireless_stats.get(net_id, []) if isinstance(wireless_stats, dict) else []:
@@ -901,6 +999,7 @@ def _build_ap_spectrum_report(
     with_telemetry = [ap for ap in ap_records if ap["bands"]]
     high_pressure = [ap for ap in with_telemetry if "Too close" in ap["bubble"] or "WAY TOO CLOSE" in ap["bubble"]]
     tight_pressure = [ap for ap in with_telemetry if "Tight" in ap["bubble"]]
+    noise_pressure = [ap for ap in with_telemetry if "non-Wi-Fi" in ap["bubble"] or "External RF" in ap["bubble"]]
     no_telemetry = [ap for ap in ap_records if not ap["bands"]]
     site_counts: Dict[str, Dict[str, int]] = {}
     for ap in ap_records:
@@ -926,6 +1025,14 @@ def _build_ap_spectrum_report(
 
     def _candidate_rows(ap: Dict[str, Any]) -> str:
         band = ap["worst_band"]
+        stats = ap["worst_stats"] or {}
+        if stats.get("non_wifi", 0.0) >= 25 and stats.get("wifi", 0.0) < 40:
+            return (
+                '<tr><td colspan="6" class="empty-state">'
+                "Worst symptom is non-Wi-Fi interference, not AP-to-AP overlap. Inspect local RF noise sources, "
+                "run Dashboard RF Spectrum or a site survey, and avoid removing APs solely from this signal."
+                "</td></tr>"
+            )
         candidates = []
         for other in ap_records:
             if other["serial"] == ap["serial"] or other["network_id"] != ap["network_id"] or not band:
@@ -934,12 +1041,18 @@ def _build_ap_spectrum_report(
             if not stats:
                 continue
             bubble, cls = _bubble(stats)
-            candidates.append((stats.get("wifi", 0.0) + stats.get("total", 0.0), other, stats, bubble, cls))
-        candidates.sort(key=lambda item: (-item[0], item[1]["name"]))
+            candidates.append((stats.get("wifi", 0.0), stats.get("total", 0.0), other, stats, bubble, cls))
+        candidates.sort(key=lambda item: (-item[0], -item[1], item[2]["name"]))
         if not candidates:
             return '<tr><td colspan="6" class="empty-state">No same-site AP telemetry candidates were available for this affected band.</td></tr>'
         rows = []
-        for _, other, stats, bubble, cls in candidates[:6]:
+        for _, __, other, stats, bubble, cls in candidates[:6]:
+            if "External RF" in bubble or "non-Wi-Fi" in bubble:
+                context = "Same-band noise observation; not AP overlap"
+            elif "Too close" in bubble or "WAY TOO CLOSE" in bubble:
+                context = "Likely overlap candidate"
+            else:
+                context = "Within same RF domain; verify on floor plan"
             rows.append(
                 "<tr>"
                 f"<td>{_he(other['name'])}<br><code>{_he(other['serial'])}</code></td>"
@@ -947,7 +1060,7 @@ def _build_ap_spectrum_report(
                 f"<td>{_he(band)} GHz</td>"
                 f"<td>{stats['wifi']:.1f}% Wi-Fi / {stats['total']:.1f}% total</td>"
                 f"<td><span class=\"{cls}\">{_he(bubble)}</span></td>"
-                f"<td>{_he('Likely overlap candidate' if 'Too close' in bubble or 'WAY TOO CLOSE' in bubble else 'Within same RF domain; verify on floor plan')}</td>"
+                f"<td>{_he(context)}</td>"
                 "</tr>"
             )
         return "".join(rows)
@@ -965,14 +1078,26 @@ def _build_ap_spectrum_report(
                 f"<td>{stats['non_wifi']:.1f}%</td>"
                 f"<td>{stats['total']:.1f}%</td>"
                 f"<td><span class=\"{cls}\">{_he(bubble)}</span></td>"
-                f"<td>{_he(_power_context(ap['network_id'], band))}</td>"
+                f"<td>{_he(_power_context(ap, band))}</td>"
                 "</tr>"
             )
         return "".join(rows)
 
     def _recommendation(ap: Dict[str, Any]) -> str:
         stats = ap["worst_stats"] or {}
-        power = _power_context(ap["network_id"], ap["worst_band"])
+        power = _power_context(ap, ap["worst_band"])
+        if stats.get("non_wifi", 0.0) >= 50:
+            return (
+                "Treat this as an external RF noise problem before changing AP density. "
+                "Use Meraki RF Spectrum or a field survey to identify local interferers, then retest channel utilization. "
+                "Do not remove or replace APs solely because this band is saturated by non-Wi-Fi energy. "
+                + power
+            )
+        if stats.get("non_wifi", 0.0) >= 25:
+            return (
+                "Prioritize finding the local non-Wi-Fi interference source. Replacement APs will still share the same noisy spectrum until that source is removed or avoided. "
+                + power
+            )
         if "WAY TOO CLOSE" in ap["bubble"]:
             return (
                 "Treat this as a high-priority RF density problem. If the floor plan confirms "
@@ -988,10 +1113,44 @@ def _build_ap_spectrum_report(
                 + power
             )
         if stats.get("non_wifi", 0.0) >= 15:
-            return "Inspect for non-Wi-Fi noise sources near this AP before replacing hardware. New APs will still share the same noisy spectrum."
+            return "Inspect for non-Wi-Fi noise sources near this AP before replacing hardware. New APs will still share the same noisy spectrum. " + power
         if not ap["bands"]:
             return "Re-run the backup after the AP is online and reporting channel utilization; no RF decision should be made from missing telemetry alone."
-        return "No immediate removal recommendation from current telemetry. Keep this AP in the upgrade plan unless the floor plan shows unnecessary overlap."
+        return "No immediate removal recommendation from current telemetry. Keep this AP in the upgrade plan unless the floor plan shows unnecessary overlap. " + power
+
+    def _priority_action(ap: Dict[str, Any]) -> str:
+        stats = ap["worst_stats"] or {}
+        power = _power_context(ap, ap["worst_band"])
+        if stats.get("non_wifi", 0.0) >= 25:
+            return "Find/remove RF noise source; retest before AP replacement. " + power
+        if "WAY TOO CLOSE" in ap["bubble"]:
+            return "Validate floor plan; remove, disable, or relocate one AP if physical overlap is confirmed. " + power
+        if "Too close" in ap["bubble"]:
+            return "Tune channel reuse and power; consider relocation/removal if profile is already constrained. " + power
+        if "Tight" in ap["bubble"]:
+            return "Tune profile/channel width before one-for-one refresh. " + power
+        return "Monitor; no immediate RF remediation from this telemetry."
+
+    priority_rows = "".join(
+        "<tr>"
+        f"<td>{_he(ap['site'])}</td>"
+        f"<td>{_he(ap['name'])}<br><code>{_he(ap['serial'])}</code></td>"
+        f"<td>{_he((ap['worst_band'] + ' GHz') if ap['worst_band'] else 'No data')}</td>"
+        f"<td><span class=\"{ap['bubble_cls']}\">{_he(ap['bubble'])}</span></td>"
+        f"<td>{_he(_profile_name(ap))}</td>"
+        f"<td>{_he(_priority_action(ap))}</td>"
+        "</tr>"
+        for ap in sorted(
+            [*high_pressure, *noise_pressure, *tight_pressure],
+            key=lambda item: (
+                {"check-fail": 0, "check-warning": 1, "check-pass": 2}.get(item["bubble_cls"], 3),
+                item["site"],
+                item["name"],
+            ),
+        )[:18]
+    )
+    if not priority_rows:
+        priority_rows = '<tr><td colspan="6" class="empty-state">No APs require immediate RF remediation from this telemetry window.</td></tr>'
 
     ap_pages = []
     for ap in sorted(
@@ -1018,14 +1177,14 @@ def _build_ap_spectrum_report(
       <div class="summary-card">
         <div class="summary-title">Assessment</div>
         <div class="summary-body">
-          This page estimates AP-to-AP overlap from Meraki channel-utilization data. It does not claim measured physical distance; "too close" means the AP's RF bubble is showing airtime contention that commonly occurs when nearby APs, channels, or power levels overlap too aggressively.
+          This page estimates RF pressure from Meraki channel-utilization data. It does not claim measured physical distance; AP-to-AP overlap is inferred from Wi-Fi airtime, while non-Wi-Fi utilization is treated as external RF noise that should be investigated separately.
         </div>
       </div>
       <table class="data dense">
         <thead><tr><th>Band</th><th>Wi-Fi</th><th>Non-Wi-Fi</th><th>Total</th><th>Bubble</th><th>Transmit Power Context</th></tr></thead>
         <tbody>{_band_rows(ap)}</tbody>
       </table>
-      <h3>Suspected Overlap Candidates</h3>
+      <h3>Same-Band Context / Overlap Candidates</h3>
       <table class="data dense">
         <thead><tr><th>Nearby AP Candidate</th><th>Model</th><th>Band</th><th>Candidate Airtime</th><th>Bubble</th><th>Context</th></tr></thead>
         <tbody>{_candidate_rows(ap)}</tbody>
@@ -1041,11 +1200,12 @@ def _build_ap_spectrum_report(
     return f"""
     <section id="ap-spectrum" class="report-section">
       <h2>AP Spectrum Availability &amp; Interference Report</h2>
-      <p>This dedicated RF report is designed for wireless refresh planning. It identifies APs whose spectrum is clean, APs that are merely within useful range of other radios, and APs whose airtime suggests tight or excessive overlap. Excessive overlap can reduce throughput, increase retries, slow roaming, and make a Wi-Fi 6/7 replacement look worse than it should if density and power are not corrected first.</p>
+      <p>This dedicated RF report is designed for wireless refresh planning. It identifies APs whose spectrum is clean, APs that are merely within useful range of other radios, APs whose Wi-Fi airtime suggests tight or excessive overlap, and APs whose non-Wi-Fi utilization points to external RF noise. Excessive overlap or unresolved noise can reduce throughput, increase retries, slow roaming, and make a Wi-Fi 6/7 replacement look worse than it should if density, power, and noise sources are not corrected first.</p>
       <div class="kpi-row">
         <div class="kpi"><div class="kpi-label">AP Pages</div><div class="kpi-value">{len(ap_records)}</div><div class="kpi-note">One page per AP unit</div></div>
         <div class="kpi"><div class="kpi-label">RF Telemetry</div><div class="kpi-value">{len(with_telemetry)}</div><div class="kpi-note">APs with channel utilization</div></div>
         <div class="kpi"><div class="kpi-label">Too Close</div><div class="kpi-value">{len(high_pressure)}</div><div class="kpi-note">High co-channel pressure</div></div>
+        <div class="kpi"><div class="kpi-label">RF Noise</div><div class="kpi-value">{len(noise_pressure)}</div><div class="kpi-note">Non-Wi-Fi interference</div></div>
         <div class="kpi"><div class="kpi-label">Missing Data</div><div class="kpi-value">{len(no_telemetry)}</div><div class="kpi-note">Offline/dormant/no channel data</div></div>
       </div>
       <table class="data">
@@ -1055,9 +1215,14 @@ def _build_ap_spectrum_report(
       <div class="summary-card">
         <div class="summary-title">How To Read The Bubble Scale</div>
         <div class="summary-body">
-          Clean bubble means no current overlap symptom. Within range means normal overlap for roaming. Tight bubble means tune channel/power/placement. Too close and WAY TOO CLOSE mean the RF domain should be reviewed before adding or replacing APs; removal, relocation, lower power, or channel-width changes may be better than a one-for-one replacement.
+          Clean bubble means no current overlap symptom. Within range means normal overlap for roaming. Tight bubble means tune channel/power/placement. Too close and WAY TOO CLOSE mean AP-to-AP overlap should be reviewed before adding or replacing APs. RF Noise means non-Wi-Fi energy is saturating the band; find the external source before removing APs.
         </div>
       </div>
+      <h3>Recommended RF Work Queue</h3>
+      <table class="data dense">
+        <thead><tr><th>Site</th><th>AP</th><th>Band</th><th>Symptom</th><th>RF Profile</th><th>Guidance</th></tr></thead>
+        <tbody>{priority_rows}</tbody>
+      </table>
     </section>
     {''.join(ap_pages)}
     """
