@@ -729,12 +729,61 @@ def _build_ap_spectrum_report(
     rf_profiles: Any,
     rf_profile_assignments: Any = None,
     hardware_catalog: Optional[Dict[str, Any]] = None,
+    wireless_design_reference: Optional[Dict[str, Any]] = None,
+    wireless_event_log: Any = None,
 ) -> str:
     catalog_models = (
         hardware_catalog.get("models")
         if isinstance(hardware_catalog, dict) and isinstance(hardware_catalog.get("models"), dict)
         else {}
     )
+    design_sources = {
+        str(src.get("id")): src
+        for src in (wireless_design_reference or {}).get("sources", [])
+        if isinstance(src, dict) and src.get("id") and src.get("url")
+    }
+    design_rules = {
+        str(rule.get("id")): rule
+        for rule in (wireless_design_reference or {}).get("rules", [])
+        if isinstance(rule, dict) and rule.get("id")
+    }
+
+    def _source_links(source_ids: List[str]) -> str:
+        links = []
+        for source_id in source_ids:
+            source = design_sources.get(source_id)
+            if not source:
+                continue
+            links.append(
+                f'<a href="{_he(str(source.get("url")))}">{_he(str(source.get("title") or source_id))}</a>'
+            )
+        return "; ".join(links) if links else "Local RF heuristics; no external reference mapped."
+
+    def _rule_source_ids(rule_ids: List[str]) -> List[str]:
+        source_ids: List[str] = []
+        for rule_id in rule_ids:
+            rule = design_rules.get(rule_id) or {}
+            for source_id in rule.get("sourceIds", []):
+                if source_id not in source_ids:
+                    source_ids.append(str(source_id))
+        return source_ids
+
+    def _rules_table(rule_ids: List[str]) -> str:
+        rows = []
+        for rule_id in rule_ids:
+            rule = design_rules.get(rule_id)
+            if not rule:
+                continue
+            rows.append(
+                "<tr>"
+                f"<td>{_he(str(rule.get('label') or rule_id))}</td>"
+                f"<td>{_he(str(rule.get('basis') or ''))}</td>"
+                f"<td>{_source_links([str(src) for src in rule.get('sourceIds', [])])}</td>"
+                "</tr>"
+            )
+        if not rows:
+            return '<tr><td colspan="3" class="empty-state">No official Meraki wireless reference catalog was loaded.</td></tr>'
+        return "".join(rows)
 
     def _band_stats(row: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
         bands: Dict[str, Dict[str, float]] = {}
@@ -852,6 +901,73 @@ def _build_ap_spectrum_report(
         for item in _flatten_assignments(rf_profile_assignments)
         if item.get("serial")
     }
+
+    def _flatten_wireless_events(raw: Any) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
+        if isinstance(raw, dict):
+            for payload in raw.values():
+                if isinstance(payload, dict) and isinstance(payload.get("events"), list):
+                    events.extend(event for event in payload["events"] if isinstance(event, dict))
+                elif isinstance(payload, list):
+                    for item in payload:
+                        if isinstance(item, dict) and isinstance(item.get("events"), list):
+                            events.extend(event for event in item["events"] if isinstance(event, dict))
+                        elif isinstance(item, dict):
+                            events.append(item)
+        elif isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict) and isinstance(item.get("events"), list):
+                    events.extend(event for event in item["events"] if isinstance(event, dict))
+                elif isinstance(item, dict):
+                    events.append(item)
+        return events
+
+    event_issue_fragments = (
+        "fail",
+        "failed",
+        "failure",
+        "denied",
+        "deauth",
+        "disassoc",
+        "radar",
+        "dfs",
+        "channel change",
+        "interference",
+        "noise",
+        "poor",
+    )
+    wireless_events = _flatten_wireless_events(wireless_event_log)
+    events_by_serial: Dict[str, List[Dict[str, Any]]] = {}
+    for event in wireless_events:
+        serial = str(event.get("deviceSerial") or "")
+        if serial:
+            events_by_serial.setdefault(serial, []).append(event)
+
+    def _event_context(ap: Dict[str, Any]) -> Dict[str, Any]:
+        events = events_by_serial.get(ap["serial"], [])
+        issue_events = []
+        for event in events:
+            text = " ".join(
+                str(event.get(key) or "")
+                for key in ("type", "description", "category")
+            ).lower()
+            if any(fragment in text for fragment in event_issue_fragments):
+                issue_events.append(event)
+        recent_types: Dict[str, int] = {}
+        for event in issue_events[:25]:
+            event_type = str(event.get("type") or event.get("description") or "wireless event")
+            recent_types[event_type] = recent_types.get(event_type, 0) + 1
+        if issue_events:
+            top = ", ".join(f"{count} {event_type}" for event_type, count in list(recent_types.items())[:3])
+            summary = f"{len(issue_events)} related wireless event(s) in the captured log: {top}."
+            cls = "check-warning"
+        elif events:
+            summary = f"{len(events)} wireless event(s) captured; no obvious failure/interference keywords were found."
+            cls = "check-pass"
+        else:
+            summary = "No AP-specific wireless event log entries were captured for this AP."
+            cls = "check-warning"
+        return {"events": events, "issues": issue_events, "summary": summary, "class": cls}
 
     def _profile_settings_by_id(net_id: str) -> Dict[str, Dict[str, Any]]:
         profiles = rf_profiles.get(net_id) if isinstance(rf_profiles, dict) else None
@@ -1116,6 +1232,7 @@ def _build_ap_spectrum_report(
             bubble_label, bubble_cls = _bubble(worst_stats)
             severity = _severity(worst_stats)
             clients = _client_stats(serial, net_id)
+            log_context = _event_context({"serial": serial})
             ap_records.append(
                 {
                     "site": net_data.get("name") or "Unassigned",
@@ -1131,6 +1248,7 @@ def _build_ap_spectrum_report(
                     "bubble_cls": bubble_cls,
                     "severity": severity,
                     "clients": clients,
+                    "log_context": log_context,
                 }
             )
 
@@ -1152,6 +1270,7 @@ def _build_ap_spectrum_report(
             )
         bubble_label, bubble_cls = _bubble(worst_stats)
         severity = _severity(worst_stats)
+        log_context = _event_context({"serial": serial})
         ap_records.append(
             {
                 "site": net_data.get("name") or "Unassigned",
@@ -1167,6 +1286,7 @@ def _build_ap_spectrum_report(
                 "bubble_cls": bubble_cls,
                 "severity": severity,
                 "clients": _client_stats(serial, net_id),
+                "log_context": log_context,
             }
         )
 
@@ -1300,6 +1420,22 @@ def _build_ap_spectrum_report(
             return "Re-run the backup after the AP is online and reporting channel utilization; no RF decision should be made from missing telemetry alone."
         return "No immediate removal recommendation from current telemetry. Keep this AP in the upgrade plan unless the floor plan shows unnecessary overlap. " + power
 
+    def _standards_for_ap(ap: Dict[str, Any]) -> List[str]:
+        stats = ap["worst_stats"] or {}
+        rule_ids = ["utilization-50-plus", "event-log-correlation"]
+        if stats.get("non_wifi", 0.0) >= 15:
+            rule_ids.append("non-wifi-noise")
+        if "WAY TOO CLOSE" in ap["bubble"] or "Too close" in ap["bubble"] or "Tight" in ap["bubble"]:
+            rule_ids.extend(["site-survey", "high-density-channel-width", "auto-rf-domain"])
+        cap = _ap_capability(ap)
+        if cap.get("sixGhzCapable"):
+            rule_ids.append("6ghz-afc")
+        result: List[str] = []
+        for rule_id in rule_ids:
+            if rule_id not in result:
+                result.append(rule_id)
+        return result
+
     def _priority_action(ap: Dict[str, Any]) -> str:
         stats = ap["worst_stats"] or {}
         power = _power_context(ap, ap["worst_band"])
@@ -1333,11 +1469,12 @@ def _build_ap_spectrum_report(
         f"<td><span class=\"{(ap.get('severity') or {}).get('class', ap['bubble_cls'])}\">{_he((ap.get('severity') or {}).get('label', 'Unknown'))}</span><br>{_he(ap['bubble'])}</td>"
         f"<td>{_he(_profile_name(ap))}</td>"
         f"<td>{_he(_priority_action(ap))}</td>"
+        f"<td>{_source_links(_rule_source_ids(_standards_for_ap(ap)))}</td>"
         "</tr>"
         for ap in severity_queue[:24]
     )
     if not priority_rows:
-        priority_rows = '<tr><td colspan="7" class="empty-state">No APs require immediate RF remediation from this telemetry window.</td></tr>'
+        priority_rows = '<tr><td colspan="8" class="empty-state">No APs require immediate RF remediation from this telemetry window.</td></tr>'
 
     ap_pages = []
     for ap in sorted(
@@ -1353,6 +1490,8 @@ def _build_ap_spectrum_report(
         severity = ap.get("severity") or _severity(stats)
         cap = _ap_capability(ap)
         profile_ctx = _profile_band_context(ap)
+        log_ctx = ap.get("log_context") or {"summary": "No wireless event log context was captured.", "class": "check-warning"}
+        standard_links = _source_links(_rule_source_ids(_standards_for_ap(ap)))
         ap_pages.append(
             f"""
     <section class="report-section ap-unit-page">
@@ -1382,7 +1521,11 @@ def _build_ap_spectrum_report(
       </table>
       <div class="summary-card">
         <div class="summary-title">Recommendation</div>
-        <div class="summary-body">{_he(_recommendation(ap))}</div>
+        <div class="summary-body">
+          {_he(_recommendation(ap))}
+          <br><strong>Wireless Event Log Context:</strong> <span class="{_he(str(log_ctx.get('class') or 'check-warning'))}">{_he(str(log_ctx.get('summary') or 'No wireless event log context was captured.'))}</span>
+          <br><strong>Standards basis:</strong> {standard_links}
+        </div>
       </div>
     </section>
             """
@@ -1410,9 +1553,14 @@ def _build_ap_spectrum_report(
           Clean bubble means no current overlap symptom. Within range means normal overlap for roaming. Tight bubble means tune channel/power/placement. Too close and WAY TOO CLOSE mean AP-to-AP overlap should be reviewed before adding or replacing APs. RF Noise means non-Wi-Fi energy is saturating the band; find the external source before removing APs.
         </div>
       </div>
+      <h3>Meraki Standards Basis</h3>
+      <table class="data dense">
+        <thead><tr><th>Guidance</th><th>How This Report Uses It</th><th>Official Reference</th></tr></thead>
+        <tbody>{_rules_table(['utilization-50-plus', 'non-wifi-noise', 'high-density-channel-width', 'auto-rf-domain', 'site-survey', '6ghz-afc', 'event-log-correlation'])}</tbody>
+      </table>
       <h3>Interference Severity Queue</h3>
       <table class="data dense">
-        <thead><tr><th>Site</th><th>AP</th><th>Model Capability</th><th>Band</th><th>Severity / Symptom</th><th>RF Profile</th><th>Guidance</th></tr></thead>
+        <thead><tr><th>Site</th><th>AP</th><th>Model Capability</th><th>Band</th><th>Severity / Symptom</th><th>RF Profile</th><th>Guidance</th><th>Standards Basis</th></tr></thead>
         <tbody>{priority_rows}</tbody>
       </table>
     </section>

@@ -1,0 +1,104 @@
+{
+  "meta": {
+    "name": "Meraki wireless design and RF operations reference",
+    "version": "2026-05-05",
+    "notes": [
+      "Official Cisco Meraki documentation links used to support AP Spectrum recommendations.",
+      "Guidance is used as a standards basis for report commentary; final AP placement decisions still require floor plan review and site survey validation."
+    ]
+  },
+  "sources": [
+    {
+      "id": "enterprise-rf-design",
+      "title": "Meraki Wireless for Enterprise Best Practices - RF Design",
+      "url": "https://documentation.meraki.com/Platform_Management/Dashboard_Administration/Design_and_Configure/Architectures_and_Best_Practices/Meraki_Wireless_for_Enterprise_Best_Practices/Meraki_Wireless_for_Enterprise_Best_Practices_-_RF_Design",
+      "appliesTo": ["placement", "density", "rf-profile", "channel-width", "power"]
+    },
+    {
+      "id": "high-density",
+      "title": "High Density Wi-Fi Deployments",
+      "url": "https://documentation.meraki.com/Platform_Management/Dashboard_Administration/Design_and_Configure/Architectures_and_Best_Practices/Cisco_Meraki_Best_Practice_Design/Best_Practice_Design_-_MR_Wireless/High_Density_Wi-Fi_Deployments",
+      "appliesTo": ["placement", "density", "channel-width", "data-rate", "client-balancing"]
+    },
+    {
+      "id": "auto-rf",
+      "title": "Auto RF: Wi-Fi Channel and Power Management",
+      "url": "https://documentation.meraki.com/MR/Operate_and_Maintain/Monitoring_and_Reporting/Auto_RF%3A__Wi-Fi_Channel_and_Power_Management",
+      "appliesTo": ["auto-rf", "channel", "power", "interference", "logs"]
+    },
+    {
+      "id": "rf-spectrum",
+      "title": "RF Spectrum Page Overview",
+      "url": "https://documentation.meraki.com/Wireless/Operate_and_Maintain/User_Guides/Monitoring_and_Reporting/RF_Spectrum_Page_Overview",
+      "appliesTo": ["channel-utilization", "interference", "noise", "validation"]
+    },
+    {
+      "id": "health-ap-details",
+      "title": "Meraki Health - MR Access Point Details",
+      "url": "https://documentation.meraki.com/Platform_Management/Dashboard_Administration/Operate_and_Maintain/Monitoring_and_Reporting/Meraki_Health_Overview/Meraki_Health_-_MR_Access_Point_Details",
+      "appliesTo": ["wireless-health", "channel-utilization", "latency", "logs"]
+    },
+    {
+      "id": "location-deployment",
+      "title": "Location Deployment Guidelines",
+      "url": "https://documentation.meraki.com/Wireless/Design_and_Configure/Deployment_Guides/Location_Deployment_Guidelines",
+      "appliesTo": ["placement", "floor-plan", "site-survey", "mounting"]
+    },
+    {
+      "id": "afc",
+      "title": "Automatic Frequency Coordination",
+      "url": "https://documentation.meraki.com/Wireless/Design_and_Configure/Deployment_Guides/Automatic_Frequency_Coordination",
+      "appliesTo": ["6ghz", "standard-power", "mounting-height", "location"]
+    },
+    {
+      "id": "api-events",
+      "title": "Meraki Dashboard API - Get Network Events",
+      "url": "https://developer.cisco.com/meraki/api-v1/get-network-events/",
+      "appliesTo": ["event-log", "wireless-logs", "api-backup"]
+    }
+  ],
+  "rules": [
+    {
+      "id": "utilization-50-plus",
+      "label": "Validate high channel utilization",
+      "basis": "Meraki RF Spectrum documentation states that utilization above 50% is likely to create performance issues, with severity increasing as utilization rises.",
+      "sourceIds": ["rf-spectrum", "health-ap-details"]
+    },
+    {
+      "id": "non-wifi-noise",
+      "label": "Separate non-Wi-Fi interference from AP overlap",
+      "basis": "Meraki Wireless Health and RF Spectrum separate 802.11 utilization from non-802.11 interference. Non-Wi-Fi saturation should be investigated before removing APs.",
+      "sourceIds": ["rf-spectrum", "health-ap-details", "auto-rf"]
+    },
+    {
+      "id": "high-density-channel-width",
+      "label": "Use narrower channels in dense environments",
+      "basis": "Meraki high-density guidance recommends 20 MHz 5 GHz channels where density and channel reuse matter.",
+      "sourceIds": ["high-density", "enterprise-rf-design"]
+    },
+    {
+      "id": "auto-rf-domain",
+      "label": "Keep RF neighbors in a common RF domain",
+      "basis": "Meraki enterprise architecture guidance notes Auto RF works on a Meraki Network basis, so APs that are RF neighbors should share the same Meraki Network when practical.",
+      "sourceIds": ["auto-rf", "enterprise-rf-design"]
+    },
+    {
+      "id": "site-survey",
+      "label": "Validate physical placement with floor plan or survey",
+      "basis": "Meraki deployment guidance recommends validating AP coverage and placement with a site survey/floor plan instead of relying only on dashboard telemetry.",
+      "sourceIds": ["location-deployment", "high-density"]
+    },
+    {
+      "id": "6ghz-afc",
+      "label": "Validate 6 GHz enablement and AFC requirements",
+      "basis": "Meraki AFC documentation describes RF profile enablement, AP height, and location requirements for 6 GHz Standard Power operation.",
+      "sourceIds": ["afc", "auto-rf"]
+    },
+    {
+      "id": "event-log-correlation",
+      "label": "Correlate RF findings with wireless event logs",
+      "basis": "The Meraki event log API can return wireless events by network/AP; these events should be used as supporting context rather than sole RF evidence.",
+      "sourceIds": ["api-events", "health-ap-details"]
+    }
+  ]
+}

@@ -1174,6 +1174,7 @@ def main() -> int:
             network_clients = {}
             wireless_clients = {}
             wireless_ssids = {}
+            wireless_event_log = {}
             alerts_history = {}
             appliance_baseline = {}
             appliance_uplinks_usage = {}
@@ -1301,6 +1302,16 @@ def main() -> int:
                         params={"perPage": PER_PAGE_EVENTS},
                     ),
                     "Alerts history unavailable",
+                    capability_aware=True,
+                )
+                wireless_event_log[net_id] = _load_or_fetch_net(
+                    "wireless_event_log.json",
+                    lambda: safe_get_one(
+                        f"/networks/{net_id}/events",
+                        api_key,
+                        params={"productType": "wireless", "perPage": PER_PAGE_EVENTS},
+                    ),
+                    "Wireless event log unavailable",
                     capability_aware=True,
                 )
 
@@ -1493,6 +1504,7 @@ def main() -> int:
             write_json(_pf("network_clients.json"), network_clients)
             write_json(_pf("wireless_clients.json"), wireless_clients)
             write_json(_pf("wireless_ssids.json"), wireless_ssids)
+            write_json(_pf("wireless_event_log.json"), wireless_event_log)
             write_json(_pf("alerts_history.json"), alerts_history)
             write_json(_pf("appliance_uplinks_usage.json"), appliance_uplinks_usage)
             write_json(_pf("appliance_vlans.json"), appliance_vlans)

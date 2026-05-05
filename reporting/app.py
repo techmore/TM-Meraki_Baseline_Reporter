@@ -60,6 +60,11 @@ UPS_REFERENCE_PATH = os.path.join(
     "reference",
     "ups_runtime_reference.json",
 )
+WIRELESS_DESIGN_REFERENCE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "reference",
+    "wireless_design_reference.json",
+)
 UPS_LOAD_BUFFER_RATIO = 0.10
 
 
@@ -113,6 +118,14 @@ def _load_ups_payload(org_dir: str) -> Dict[str, Any]:
         load_json(os.path.join(org_dir, "ups_runtime_reference.json"))
         or load_json(os.path.join(BASE_DIR, "ups_runtime_reference.json"))
         or load_json(UPS_REFERENCE_PATH)
+        or {}
+    )
+
+
+def _load_wireless_design_reference(org_dir: str) -> Dict[str, Any]:
+    return (
+        load_json(os.path.join(org_dir, "wireless_design_reference.json"))
+        or load_json(WIRELESS_DESIGN_REFERENCE_PATH)
         or {}
     )
 
@@ -795,6 +808,7 @@ def build_org_report(
     wireless_settings = load_json(os.path.join(org_dir, "wireless_settings.json")) or {}
     wireless_ssids = load_json(os.path.join(org_dir, "wireless_ssids.json")) or {}
     alerts_history = load_json(os.path.join(org_dir, "alerts_history.json")) or {}
+    wireless_event_log = load_json(os.path.join(org_dir, "wireless_event_log.json")) or {}
     wireless_mesh_statuses = load_json(os.path.join(org_dir, "wireless_mesh_statuses.json")) or {}
     appliance_vlans = load_json(os.path.join(org_dir, "appliance_vlans.json")) or {}
     appliance_dhcp_subnets = load_json(os.path.join(org_dir, "appliance_dhcp_subnets.json")) or {}
@@ -802,6 +816,7 @@ def build_org_report(
     pricing_payload = _load_pricing_payload(org_dir)
     hardware_catalog = _load_hardware_catalog(org_dir)
     ups_payload = _load_ups_payload(org_dir)
+    wireless_design_reference = _load_wireless_design_reference(org_dir)
 
     # switch_port_configs / statuses are {serial: [port, …]} dicts — flatten,
     # injecting switchSerial so downstream code can reference the parent switch.
@@ -1506,6 +1521,8 @@ def build_org_report(
         rf_profiles,
         rf_profile_assignments,
         hardware_catalog,
+        wireless_design_reference,
+        wireless_event_log,
     )
     config_coverage_html = _build_config_coverage_section(org_dir, networks)
     budget_forecast_html = _build_budget_forecast_section(inventory_summary, pricing_payload)

@@ -871,10 +871,33 @@ class TestBuildOrgReport:
             ),
             encoding="utf-8",
         )
+        (tmp_path / "wireless_event_log.json").write_text(
+            json.dumps(
+                {
+                    "N_test_001": {
+                        "events": [
+                            {
+                                "occurredAt": "2026-05-05T12:00:00Z",
+                                "type": "association_fail",
+                                "description": "802.11 association failure",
+                                "category": "80211",
+                                "deviceSerial": "Q2AP-TEST-0001",
+                                "deviceName": "AP-1F-01",
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
 
         html = build_org_report(str(tmp_path), "AP Spectrum Test", report_kind="ap_spectrum")
         assert "AP Spectrum Availability &amp; Interference Report" in html
         assert html.count("ap-unit-page") >= 2
+        assert "Meraki Standards Basis" in html
+        assert "High Density Wi-Fi Deployments" in html
+        assert "Wireless Event Log Context" in html
+        assert "association_fail" in html
         assert "WAY TOO CLOSE / saturated RF bubble" in html
         assert "Same-Band Context / Overlap Candidates" in html
         assert "Current RF profile: Classroom Low Power (exact AP assignment)" in html
