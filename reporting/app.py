@@ -696,6 +696,40 @@ def generate_org_reports(
             html_targets.extend([latest_backup_html_alias, latest_backup_html_compat])
         _cleanup_paths(tuple(path for path in html_targets if path))
 
+    battery_body = build_org_report(source_dir, org_name, report_kind="battery_backup")
+    battery_html = build_html(f"{org_name} — Battery Backup Pricing & Runtime Calculation", battery_body)
+    battery_html_path = os.path.join(output_dir, f"{_slug}_{_stamp}_battery_backup_report.html")
+    battery_pdf_path = os.path.join(output_dir, f"{_slug}_{_stamp}_battery_backup_report.pdf")
+    battery_named_html_alias = os.path.join(output_dir, _dated_report_name(org_name, "Battery_Backup_Pricing_Calculation", _run_ts, "html"))
+    battery_named_pdf_alias = os.path.join(output_dir, _dated_report_name(org_name, "Battery_Backup_Pricing_Calculation", _run_ts, "pdf"))
+    battery_html_alias = os.path.join(output_dir, "report_battery_backup.html")
+    battery_pdf_alias = os.path.join(output_dir, "report_battery_backup.pdf")
+    if latest_dir:
+        battery_html_path = battery_named_html_alias
+        battery_pdf_path = battery_named_pdf_alias
+        battery_html_alias = None
+        battery_pdf_alias = None
+    latest_battery_html_alias = os.path.join(latest_dir, _dated_report_name(org_name, "Battery_Backup_Pricing_Calculation", _run_ts, "html")) if latest_dir else None
+    latest_battery_pdf_alias = os.path.join(latest_dir, _dated_report_name(org_name, "Battery_Backup_Pricing_Calculation", _run_ts, "pdf")) if latest_dir else None
+    latest_battery_html_compat = os.path.join(latest_dir, "report_battery_backup.html") if latest_dir else None
+    latest_battery_pdf_compat = os.path.join(latest_dir, "report_battery_backup.pdf") if latest_dir else None
+    _write_text_aliases(battery_html, (battery_html_path, battery_named_html_alias, battery_html_alias))
+    if latest_dir:
+        _write_text_aliases(battery_html, (latest_battery_html_alias, latest_battery_html_compat))
+    battery_pdf_ok = write_pdf(battery_html_path, battery_pdf_path)
+    if battery_pdf_ok:
+        _copy_existing(battery_pdf_path, (battery_named_pdf_alias, battery_pdf_alias))
+        if latest_dir:
+            _copy_existing(battery_pdf_path, (latest_battery_pdf_alias, latest_battery_pdf_compat))
+        log.info("Battery Backup PDF → %s", battery_named_pdf_alias)
+    else:
+        log.info("Battery Backup HTML → %s  (no PDF tool found)", battery_html_path)
+    if not keep_html and battery_pdf_ok:
+        html_targets = [battery_html_path, battery_named_html_alias, battery_html_alias]
+        if latest_dir:
+            html_targets.extend([latest_battery_html_alias, latest_battery_html_compat])
+        _cleanup_paths(tuple(path for path in html_targets if path))
+
     ap_spectrum_body = build_org_report(source_dir, org_name, report_kind="ap_spectrum")
     ap_spectrum_html = build_html(f"{org_name} — AP Spectrum & Interference Report", ap_spectrum_body)
     ap_spectrum_html_path = os.path.join(output_dir, f"{_slug}_{_stamp}_ap_spectrum_report.html")
@@ -4715,6 +4749,7 @@ def build_org_report(
     )
     exec_body = cover_html + _schema_banner + exec_html + report_guide_html + end_report_html
     ap_spectrum_body = cover_html + _schema_banner + ap_spectrum_html + end_report_html
+    battery_body = cover_html + _schema_banner + ups_html + end_report_html
     backup_body = (
         cover_html
         + _schema_banner
@@ -4731,6 +4766,8 @@ def build_org_report(
 
     if report_kind == "exec":
         return exec_body
+    if report_kind in {"battery_backup", "battery-backup", "battery", "ups", "ups_runtime"}:
+        return battery_body
     if report_kind in {"ap_spectrum", "ap-spectrum", "ap_interference"}:
         return ap_spectrum_body
     if report_kind == "backup":

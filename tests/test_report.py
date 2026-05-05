@@ -248,6 +248,13 @@ class TestBuildOrgReport:
         assert "10% planning buffer" in html
         assert "ups_switch_power_plan.json" in html
         assert "1 UPS + 1 external battery module" in html
+
+        battery_html = build_org_report(str(tmp_path), "UPS Test", report_kind="battery_backup")
+        assert "Battery Backup Runtime Planning" in battery_html
+        assert "UPS Runtime Estimate by Switch" in battery_html
+        assert "Core-SW-1 (Q2SW-TEST-0001)" in battery_html
+        assert "97.5 W" in battery_html
+        assert "Executive Summary" not in battery_html
         assert "$3,487.04" in html
 
     def test_ups_power_plan_json_payload_includes_buffered_switch_load(self, tmp_path):
