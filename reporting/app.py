@@ -53,6 +53,11 @@ PRICING_REFERENCE_PATH = os.path.join(
     "reference",
     "pricing_reference.json",
 )
+UPS_REFERENCE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "reference",
+    "ups_runtime_reference.json",
+)
 
 
 def _report_slug(name: str) -> str:
@@ -98,6 +103,68 @@ def _load_pricing_payload(org_dir: str) -> Dict[str, Any]:
         or load_json(PRICING_REFERENCE_PATH)
         or {}
     )
+
+
+def _load_ups_payload(org_dir: str) -> Dict[str, Any]:
+    return (
+        load_json(os.path.join(org_dir, "ups_runtime_reference.json"))
+        or load_json(os.path.join(BASE_DIR, "ups_runtime_reference.json"))
+        or load_json(UPS_REFERENCE_PATH)
+        or {}
+    )
+
+
+def _format_money(value: int | float | None) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "Pricing needed"
+    return f"${value:,.0f}" if float(value).is_integer() else f"${value:,.2f}"
+
+
+def _format_runtime_minutes(minutes: float | None) -> str:
+    if not isinstance(minutes, (int, float)) or isinstance(minutes, bool):
+        return "Over UPS rating"
+    if minutes < 60:
+        return f"{minutes:.0f} min" if minutes >= 10 else f"{minutes:.1f} min"
+    hours = int(minutes // 60)
+    mins = int(round(minutes % 60))
+    if mins == 60:
+        hours += 1
+        mins = 0
+    return f"{hours}h {mins:02d}m"
+
+
+def _interpolate_runtime_minutes(points: Any, watts: float) -> float | None:
+    if not isinstance(points, list) or not isinstance(watts, (int, float)) or watts <= 0:
+        return None
+    cleaned = sorted(
+        (
+            (float(p.get("watts")), float(p.get("minutes")))
+            for p in points
+            if isinstance(p, dict)
+            and isinstance(p.get("watts"), (int, float))
+            and isinstance(p.get("minutes"), (int, float))
+            and p.get("watts") > 0
+            and p.get("minutes") > 0
+        ),
+        key=lambda pair: pair[0],
+    )
+    if not cleaned:
+        return None
+    if watts <= cleaned[0][0]:
+        return cleaned[0][1]
+    if watts > cleaned[-1][0]:
+        return None
+    for (w1, m1), (w2, m2) in zip(cleaned, cleaned[1:]):
+        if w1 <= watts <= w2:
+            if watts == w1:
+                return m1
+            if watts == w2:
+                return m2
+            # Runtime curves are nonlinear. Log interpolation tracks UPS runtime charts
+            # better than a straight-line fit between sparse vendor chart points.
+            ratio = (math.log(watts) - math.log(w1)) / (math.log(w2) - math.log(w1))
+            return math.exp(math.log(m1) + ratio * (math.log(m2) - math.log(m1)))
+    return None
 
 
 def _read_org_name(org_dir: str) -> str:
@@ -360,6 +427,7 @@ def build_org_report(
     appliance_policy_backup = load_json(os.path.join(org_dir, "appliance_policy_backup.json")) or {}
     pricing_payload = _load_pricing_payload(org_dir)
     hardware_catalog = _load_hardware_catalog(org_dir)
+    ups_payload = _load_ups_payload(org_dir)
 
     # switch_port_configs / statuses are {serial: [port, …]} dicts — flatten,
     # injecting switchSerial so downstream code can reference the parent switch.
@@ -1080,6 +1148,7 @@ def build_org_report(
         (4, "Traffic Flows & Bottleneck Analysis", "traffic-flows", ""),
         (5, "Device Health & Issues", "device-health", ""),
         (6, "PoE Power Analysis", "poe-analysis", ""),
+        ("6A", "Battery Backup Runtime Planning", "ups-runtime", ""),
         (7, "Security Baseline", "security-baseline", ""),
         (8, "Recommendations & Implementation Plan", "recommendations", ""),
         (9, "CIS 8 Controls Assessment", "cis8", ""),
@@ -2755,6 +2824,222 @@ def build_org_report(
     poe_html += "</section>"
 
     # =========================================================
+    # SECTION 6A: UPS RUNTIME PLANNING
+    # =========================================================
+    ups_meta = ups_payload.get("meta") if isinstance(ups_payload, dict) else {}
+    ups_products = ups_payload.get("products") if isinstance(ups_payload, dict) else {}
+    ups_assumptions = (
+        ups_payload.get("switch_load_assumptions") if isinstance(ups_payload, dict) else {}
+    )
+    ups_target_hours = (
+        float(ups_meta.get("target_runtime_hours"))
+        if isinstance(ups_meta, dict) and isinstance(ups_meta.get("target_runtime_hours"), (int, float))
+        else 10.0
+    )
+    ups_target_minutes = ups_target_hours * 60
+    bx_ref = ups_products.get("BX1500M") if isinstance(ups_products, dict) else {}
+    smx_ref = ups_products.get("SMX2200RMLV2U") if isinstance(ups_products, dict) else {}
+
+    def _estimated_switch_base_watts(model: str) -> float:
+        prefixes = (
+            ups_assumptions.get("model_prefixes")
+            if isinstance(ups_assumptions, dict) and isinstance(ups_assumptions.get("model_prefixes"), dict)
+            else {}
+        )
+        for prefix, watts in sorted(prefixes.items(), key=lambda item: len(str(item[0])), reverse=True):
+            if model.startswith(str(prefix)) and isinstance(watts, (int, float)):
+                return float(watts)
+
+        fallback = (
+            ups_assumptions.get("fallback_by_port_count")
+            if isinstance(ups_assumptions, dict) and isinstance(ups_assumptions.get("fallback_by_port_count"), dict)
+            else {}
+        )
+        for port_count in ("48", "24", "8"):
+            if re.search(rf"(?:^|[-_]){port_count}(?:[A-Z-]|$)", model):
+                value = fallback.get(port_count)
+                if isinstance(value, (int, float)):
+                    return float(value)
+        value = fallback.get("default")
+        return float(value) if isinstance(value, (int, float)) else 75.0
+
+    def _ups_runtime(product: Dict[str, Any], watts: float) -> float | None:
+        max_watts = product.get("max_watts") if isinstance(product, dict) else None
+        if isinstance(max_watts, (int, float)) and watts > float(max_watts):
+            return None
+        return _interpolate_runtime_minutes(product.get("runtime_points_minutes"), watts)
+
+    def _smx_runtime_config(config: Dict[str, Any], watts: float) -> float | None:
+        max_watts = smx_ref.get("max_watts") if isinstance(smx_ref, dict) else None
+        if isinstance(max_watts, (int, float)) and watts > float(max_watts):
+            return None
+        return _interpolate_runtime_minutes(config.get("runtime_points_minutes"), watts)
+
+    def _smx_stack_cost(external_count: int) -> float | None:
+        unit = smx_ref.get("unit_cost") if isinstance(smx_ref, dict) else None
+        ext = smx_ref.get("external_battery_unit_cost") if isinstance(smx_ref, dict) else None
+        if not isinstance(unit, (int, float)) or not isinstance(ext, (int, float)):
+            return None
+        return float(unit) + (external_count * float(ext))
+
+    ups_rows: List[List[str]] = []
+    ups_loads: List[float] = []
+    runtime_configs = (
+        smx_ref.get("runtime_configurations")
+        if isinstance(smx_ref, dict) and isinstance(smx_ref.get("runtime_configurations"), list)
+        else []
+    )
+    for sw in sorted(
+        switch_devices,
+        key=lambda d: (
+            str((d.get("network") or {}).get("name") or ""),
+            str(d.get("name") or d.get("model") or d.get("serial") or ""),
+        ),
+    ):
+        serial = str(sw.get("serial") or "")
+        model = str(sw.get("model") or "")
+        label = str(sw.get("name") or model or serial or "Unknown switch")
+        poe_data = poe_by_serial.get(serial, {}) if isinstance(poe_by_serial, dict) else {}
+        observed_poe = float(poe_data.get("avgWatts", 0) or 0)
+        base_watts = _estimated_switch_base_watts(model)
+        modeled_load = observed_poe + base_watts
+        ups_loads.append(modeled_load)
+
+        bx_runtime = _ups_runtime(bx_ref, modeled_load) if isinstance(bx_ref, dict) else None
+        base_config = next(
+            (
+                config for config in runtime_configs
+                if isinstance(config, dict) and int(config.get("external_battery_count") or 0) == 0
+            ),
+            {},
+        )
+        smx_base_runtime = _smx_runtime_config(base_config, modeled_load) if base_config else None
+        target_config: Dict[str, Any] | None = None
+        target_runtime: float | None = None
+        for config in sorted(
+            [c for c in runtime_configs if isinstance(c, dict)],
+            key=lambda c: int(c.get("external_battery_count") or 0),
+        ):
+            runtime = _smx_runtime_config(config, modeled_load)
+            if runtime is not None and runtime >= ups_target_minutes:
+                target_config = config
+                target_runtime = runtime
+                break
+        target_external_count = (
+            int(target_config.get("external_battery_count") or 0)
+            if target_config is not None
+            else 0
+        )
+        target_label = (
+            str(target_config.get("label") or f"1 UPS + {target_external_count} external battery module(s)")
+            if target_config is not None
+            else "No listed stack reaches target"
+        )
+        if target_config is not None and target_runtime is not None:
+            target_label = f"{target_label} ({_format_runtime_minutes(target_runtime)})"
+
+        ups_rows.append(
+            [
+                f"{label} ({serial})" if serial and label != serial else label,
+                model or "Unknown",
+                f"{observed_poe:.1f} W",
+                f"{base_watts:.1f} W",
+                f"{modeled_load:.1f} W",
+                _format_runtime_minutes(bx_runtime),
+                _format_runtime_minutes(smx_base_runtime),
+                target_label,
+                _format_money(_smx_stack_cost(target_external_count) if target_config is not None else None),
+            ]
+        )
+
+    avg_ups_load = sum(ups_loads) / len(ups_loads) if ups_loads else 0
+    max_ups_load = max(ups_loads) if ups_loads else 0
+    bx_max = bx_ref.get("max_watts") if isinstance(bx_ref, dict) else None
+    smx_max = smx_ref.get("max_watts") if isinstance(smx_ref, dict) else None
+    smx_unit = smx_ref.get("unit_cost") if isinstance(smx_ref, dict) else None
+    smx_ext = smx_ref.get("external_battery_unit_cost") if isinstance(smx_ref, dict) else None
+    ups_source_links = ""
+    if isinstance(ups_meta, dict) and isinstance(ups_meta.get("sources"), list):
+        links = []
+        for source in ups_meta.get("sources", [])[:4]:
+            if not isinstance(source, dict) or not source.get("url"):
+                continue
+            links.append(
+                f'<a href="{_he(str(source.get("url")))}">{_he(str(source.get("title") or source.get("url")))}</a>'
+            )
+        if links:
+            ups_source_links = "<p>Runtime reference sources: " + "; ".join(links) + ".</p>"
+
+    ups_html = f"""
+    <section id="ups-runtime" class="report-section">
+      <h2>6A. Battery Backup Runtime Planning</h2>
+      <div class="kpi-row">
+        <div class="kpi">
+          <div class="kpi-label">Switches Sized</div>
+          <div class="kpi-value">{len(ups_rows)}</div>
+          <div class="kpi-note">One UPS stack per listed switch load</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Average Modeled Load</div>
+          <div class="kpi-value">{avg_ups_load:.1f} W</div>
+          <div class="kpi-note">Observed PoE + chassis estimate</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Largest Modeled Load</div>
+          <div class="kpi-value">{max_ups_load:.1f} W</div>
+          <div class="kpi-note">Used for closet-level sizing checks</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Planning Target</div>
+          <div class="kpi-value">{ups_target_hours:g} hours</div>
+          <div class="kpi-note">Smart-UPS external battery stack</div>
+        </div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-title">Sizing Method</div>
+        <div class="summary-body">
+          The estimate models each switch as Meraki-observed average PoE draw plus a conservative chassis/base load by switch family. BX1500M is treated as a small single-switch option
+          {f"rated to {float(bx_max):g} W" if isinstance(bx_max, (int, float)) else ""}; SMX2200RMLV2U is treated as the rack/tower option
+          {f"rated to {float(smx_max):g} W" if isinstance(smx_max, (int, float)) else ""} with {smx_ref.get("external_battery_sku", "external battery modules") if isinstance(smx_ref, dict) else "external battery modules"} for extended runtime.
+          Runtime varies with battery age, temperature, load mix, and calibration, so these are planning estimates rather than procurement guarantees.
+        </div>
+      </div>
+    """
+    if ups_rows:
+        ups_html += render_section(
+            "UPS Runtime Estimate by Switch",
+            ups_rows,
+            headers=[
+                "Switch",
+                "Model",
+                "Observed PoE Avg",
+                "Chassis Est.",
+                "Modeled Load",
+                "BX1500M ETA",
+                "SMX Base ETA",
+                f"SMX Stack for {ups_target_hours:g}h",
+                "Stack Cost",
+            ],
+        )
+        ups_html += (
+            '<div class="summary-card">'
+            '<div class="summary-title">Pricing Reference</div>'
+            '<div class="summary-body">'
+            f'Smart-UPS X controller: {_format_money(smx_unit)} each. '
+            f'External battery module: {_format_money(smx_ext)} each. '
+            'The BX1500M option is included for runtime planning, but no unit price was provided in the current reference data.'
+            f'{ups_source_links}'
+            '</div></div>'
+        )
+    else:
+        ups_html += (
+            '<div class="summary-card">'
+            '<div class="summary-body">No switch inventory was available for UPS runtime planning.</div>'
+            "</div>"
+        )
+    ups_html += "</section>"
+
+    # =========================================================
     # SECTION 6: SECURITY & COMPLIANCE
     # =========================================================
     # Build category-level summary from baseline checks
@@ -4088,6 +4373,7 @@ def build_org_report(
         + traffic_html
         + issues_html
         + poe_html
+        + ups_html
         + security_html
         + recommendations_html
         + cis8_html

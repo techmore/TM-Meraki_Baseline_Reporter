@@ -35,6 +35,7 @@ class TestBuildOrgReport:
         assert 'class="toc-link" href="#executive-summary"' in report_html
         assert 'class="toc-link" href="#network-overview"' in report_html
         assert 'class="toc-link" href="#config-coverage"' in report_html
+        assert 'class="toc-link" href="#ups-runtime"' in report_html
         assert 'class="toc-link" href="#switch-deep-dive"' in report_html
         assert 'class="toc-link" href="#unifi-comparison"' in report_html
         assert 'class="toc-link" href="#vlan-reference"' in report_html
@@ -210,6 +211,41 @@ class TestBuildOrgReport:
         assert "<th>Headroom</th>" in html
         assert "Core-SW-1 (Q2SW-TEST-0001)" in html
         assert "327.5 W" in html
+
+    def test_ups_runtime_planning_uses_poe_and_apc_reference(self, tmp_path):
+        from reporting.app import build_org_report
+
+        for fn in os.listdir(FIXTURES):
+            src = os.path.join(FIXTURES, fn)
+            dst = tmp_path / fn
+            if os.path.isfile(src):
+                shutil.copy(src, dst)
+
+        (tmp_path / "poe_power_summary.json").write_text(
+            json.dumps(
+                {
+                    "switch_poe_totals": [
+                        {
+                            "serial": "Q2SW-TEST-0001",
+                            "avgWatts": 42.5,
+                            "powerUsageInWh": 1020,
+                        }
+                    ],
+                    "port_poe_totals": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        html = build_org_report(str(tmp_path), "UPS Test")
+        assert "Battery Backup Runtime Planning" in html
+        assert "UPS Runtime Estimate by Switch" in html
+        assert "BX1500M ETA" in html
+        assert "SMX2200RMLV2U" in html
+        assert "Core-SW-1 (Q2SW-TEST-0001)" in html
+        assert "97.5 W" in html
+        assert "1 UPS + 1 external battery module" in html
+        assert "$3,487.04" in html
 
     def test_expanded_hardware_catalog_renders_catalyst_poe_budget(self, tmp_path):
         from reporting.app import build_org_report
