@@ -9,6 +9,18 @@
     ],
     "sources": [
       {
+        "title": "Cisco Wireless Access Point Wi-Fi Generation and Standards",
+        "url": "https://documentation.meraki.com/Wireless/Product_Information/Overviews_and_Datasheets/AP_Capabilities"
+      },
+      {
+        "title": "CW9176I / CW9176D1 Datasheet",
+        "url": "https://documentation.meraki.com/Wireless/Product_Information/Overviews_and_Datasheets/CW9176I_%2F%2F_CW9176D1_Datasheet"
+      },
+      {
+        "title": "MR46 Datasheet",
+        "url": "https://documentation.meraki.com/MR/Product_Information/MR_Overview_and_Specifications/MR46_Datasheet"
+      },
+      {
         "title": "MS225 Overview and Specifications",
         "url": "https://documentation.meraki.com/MS/MS_Overview_and_Specifications/MS225_Overview_and_Specifications"
       },
@@ -174,6 +186,107 @@
       "poePorts": 48,
       "uplinkPorts": "Modular",
       "source": "Catalyst 9300-M Datasheet"
+    },
+    "CW9176I": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 7",
+      "standard": "802.11be",
+      "sixGhzCapable": true,
+      "bands": ["2.4", "5", "6"],
+      "spatialStreams": 12,
+      "source": "Cisco AP Capabilities / CW9176I Datasheet"
+    },
+    "CW9176D1": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 7",
+      "standard": "802.11be",
+      "sixGhzCapable": true,
+      "bands": ["2.4", "5", "6"],
+      "spatialStreams": 12,
+      "source": "Cisco AP Capabilities / CW9176I Datasheet"
+    },
+    "CW9163E": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 6E",
+      "standard": "802.11ax",
+      "sixGhzCapable": true,
+      "bands": ["2.4", "5", "6"],
+      "source": "Cisco AP Capabilities"
+    },
+    "MR57": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 6E",
+      "standard": "802.11ax",
+      "sixGhzCapable": true,
+      "bands": ["2.4", "5", "6"],
+      "source": "Cisco AP Capabilities"
+    },
+    "MR86": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 6",
+      "standard": "802.11ax",
+      "sixGhzCapable": false,
+      "bands": ["2.4", "5"],
+      "spatialStreams": 8,
+      "source": "Cisco AP Capabilities / MR86 Datasheet"
+    },
+    "MR46": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 6",
+      "standard": "802.11ax",
+      "sixGhzCapable": false,
+      "bands": ["2.4", "5"],
+      "spatialStreams": 8,
+      "source": "Cisco AP Capabilities / MR46 Datasheet"
+    },
+    "MR44": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 6",
+      "standard": "802.11ax",
+      "sixGhzCapable": false,
+      "bands": ["2.4", "5"],
+      "spatialStreams": 4,
+      "source": "Cisco AP Capabilities"
+    },
+    "MR42": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 5",
+      "standard": "802.11ac Wave 2",
+      "sixGhzCapable": false,
+      "bands": ["2.4", "5"],
+      "source": "Cisco AP Capabilities"
+    },
+    "MR53": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 5",
+      "standard": "802.11ac Wave 2",
+      "sixGhzCapable": false,
+      "bands": ["2.4", "5"],
+      "source": "Cisco AP Capabilities"
+    },
+    "MR53E": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 5",
+      "standard": "802.11ac Wave 2",
+      "sixGhzCapable": false,
+      "bands": ["2.4", "5"],
+      "source": "Cisco AP Capabilities"
+    },
+    "MR34": {
+      "productType": "wireless",
+      "wifiGeneration": "Wi-Fi 5-era",
+      "standard": "802.11ac",
+      "sixGhzCapable": false,
+      "bands": ["2.4", "5"],
+      "source": "Meraki model-family reference"
+    },
+    "MR66": {
+      "productType": "wireless",
+      "wifiGeneration": "Legacy",
+      "standard": "802.11n",
+      "sixGhzCapable": false,
+      "bands": ["2.4", "5"],
+      "source": "Meraki model-family reference"
     }
   }
 }

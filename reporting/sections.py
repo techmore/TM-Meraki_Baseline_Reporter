@@ -728,7 +728,14 @@ def _build_ap_spectrum_report(
     wireless_stats: Dict[str, Any],
     rf_profiles: Any,
     rf_profile_assignments: Any = None,
+    hardware_catalog: Optional[Dict[str, Any]] = None,
 ) -> str:
+    catalog_models = (
+        hardware_catalog.get("models")
+        if isinstance(hardware_catalog, dict) and isinstance(hardware_catalog.get("models"), dict)
+        else {}
+    )
+
     def _band_stats(row: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
         bands: Dict[str, Dict[str, float]] = {}
         for band in row.get("byBand") or []:
@@ -766,6 +773,67 @@ def _build_ap_spectrum_report(
             return ("Within range / acceptable overlap", "check-pass")
         return ("Clean bubble / no overlap symptom", "check-pass")
 
+    def _severity(stats: Dict[str, float] | None) -> Dict[str, Any]:
+        if not stats:
+            return {
+                "rank": 1,
+                "label": "No telemetry",
+                "class": "check-warning",
+                "score": 0.0,
+                "action": "Bring AP online or collect fresh channel utilization before making RF decisions.",
+            }
+        wifi = stats.get("wifi", 0.0)
+        non_wifi = stats.get("non_wifi", 0.0)
+        total = stats.get("total", 0.0)
+        score = max(total, wifi * 1.15, non_wifi * 1.1)
+        if non_wifi >= 50 or total >= 90:
+            return {
+                "rank": 6,
+                "label": "Critical",
+                "class": "check-fail",
+                "score": score,
+                "action": "Resolve immediately. Run spectrum analysis, remove the RF noise source, or temporarily disable the affected band only if client impact is confirmed.",
+            }
+        if wifi >= 55 or total >= 75 or non_wifi >= 25:
+            return {
+                "rank": 5,
+                "label": "Severe",
+                "class": "check-fail",
+                "score": score,
+                "action": "Remediate before refresh. Fix AP density, channel reuse, or external RF noise before judging replacement hardware.",
+            }
+        if wifi >= 40 or total >= 60 or non_wifi >= 15:
+            return {
+                "rank": 4,
+                "label": "Major",
+                "class": "check-fail",
+                "score": score,
+                "action": "Prioritize RF tuning. Review profile, channels, power, and local noise sources.",
+            }
+        if wifi >= 25 or total >= 45:
+            return {
+                "rank": 3,
+                "label": "Moderate",
+                "class": "check-warning",
+                "score": score,
+                "action": "Tune during normal maintenance. Watch for dense-room or hallway overlap.",
+            }
+        if wifi >= 10 or total >= 25:
+            return {
+                "rank": 2,
+                "label": "Minor",
+                "class": "check-pass",
+                "score": score,
+                "action": "Acceptable overlap for roaming; monitor trend.",
+            }
+        return {
+            "rank": 0,
+            "label": "Clean",
+            "class": "check-pass",
+            "score": score,
+            "action": "No RF remediation indicated by this telemetry window.",
+        }
+
     def _flatten_assignments(raw: Any) -> List[Dict[str, Any]]:
         if isinstance(raw, dict) and isinstance(raw.get("items"), list):
             return [item for item in raw["items"] if isinstance(item, dict)]
@@ -794,6 +862,27 @@ def _build_ap_spectrum_report(
             for profile in profiles
             if isinstance(profile, dict) and profile.get("id")
         }
+
+    def _assigned_profile(ap: Dict[str, Any]) -> Tuple[Dict[str, Any] | None, bool, str]:
+        assignment = assignment_by_serial.get(ap["serial"])
+        assigned_profile = assignment.get("rfProfile") if isinstance(assignment, dict) else None
+        assigned_profile_id = str(assigned_profile.get("id")) if isinstance(assigned_profile, dict) and assigned_profile.get("id") else ""
+        if assigned_profile_id:
+            profile = _profile_settings_by_id(ap["network_id"]).get(assigned_profile_id)
+            if profile:
+                return profile, True, str(profile.get("name") or assigned_profile.get("name") or assigned_profile_id)
+            if isinstance(assigned_profile, dict):
+                return assigned_profile, True, str(assigned_profile.get("name") or assigned_profile_id)
+
+        profiles = rf_profiles.get(ap["network_id"]) if isinstance(rf_profiles, dict) else None
+        if isinstance(profiles, list):
+            defaults = [
+                profile for profile in profiles
+                if isinstance(profile, dict) and (profile.get("isIndoorDefault") or profile.get("isOutdoorDefault"))
+            ]
+            if len(defaults) == 1:
+                return defaults[0], False, str(defaults[0].get("name") or "Default RF profile")
+        return None, False, "Profile assignment not captured"
 
     def _format_profile_power(profile: Dict[str, Any], band: str, exact: bool) -> str:
         band_map = {
@@ -833,15 +922,12 @@ def _build_ap_spectrum_report(
 
     def _power_context(ap: Dict[str, Any], band: str) -> str:
         net_id = ap["network_id"]
-        assignment = assignment_by_serial.get(ap["serial"])
-        assigned_profile = assignment.get("rfProfile") if isinstance(assignment, dict) else None
-        assigned_profile_id = str(assigned_profile.get("id")) if isinstance(assigned_profile, dict) and assigned_profile.get("id") else ""
-        if assigned_profile_id:
-            profile = _profile_settings_by_id(net_id).get(assigned_profile_id)
-            if profile:
-                return _format_profile_power(profile, band, exact=True)
-            if isinstance(assigned_profile, dict):
-                return f"Current RF profile: {assigned_profile.get('name') or assigned_profile_id} (exact AP assignment); settings detail not in backup"
+        profile, exact, profile_name = _assigned_profile(ap)
+        if profile:
+            if any(key.endswith("GhzSettings") for key in profile):
+                return _format_profile_power(profile, band, exact=exact)
+            if exact:
+                return f"Current RF profile: {profile_name} (exact AP assignment); settings detail not in backup"
 
         profiles = rf_profiles.get(net_id) if isinstance(rf_profiles, dict) else None
         if not isinstance(profiles, list) or not profiles:
@@ -890,11 +976,103 @@ def _build_ap_spectrum_report(
         return f"RF profile range; {min_text}; {max_text}{cap_note}{profile_note}"
 
     def _profile_name(ap: Dict[str, Any]) -> str:
-        assignment = assignment_by_serial.get(ap["serial"])
-        profile = assignment.get("rfProfile") if isinstance(assignment, dict) else None
-        if isinstance(profile, dict) and profile.get("name"):
-            return str(profile.get("name"))
-        return "Profile assignment not captured"
+        _, exact, name = _assigned_profile(ap)
+        return name if exact else f"{name} (fallback)" if name != "Profile assignment not captured" else name
+
+    def _ap_capability(ap: Dict[str, Any]) -> Dict[str, Any]:
+        model = str(ap.get("model") or "")
+        ref = catalog_models.get(model) if isinstance(catalog_models, dict) else None
+        if isinstance(ref, dict) and ref.get("productType") == "wireless":
+            generation = str(ref.get("wifiGeneration") or "Unknown generation")
+            standard = str(ref.get("standard") or "unknown standard")
+            six_ghz = bool(ref.get("sixGhzCapable"))
+            streams = ref.get("spatialStreams")
+            raw_bands = [str(b) for b in ref.get("bands", []) if b]
+            band_text = f"{', '.join(raw_bands)} GHz" if raw_bands else ("2.4/5/6 GHz" if six_ghz else "2.4/5 GHz")
+            label = f"{generation} / {standard} / {band_text}"
+            if isinstance(streams, (int, float)):
+                label += f" / {int(streams)} streams"
+            return {
+                "known": True,
+                "generation": generation,
+                "standard": standard,
+                "sixGhzCapable": six_ghz,
+                "label": label,
+                "source": ref.get("source") or "Meraki hardware catalog",
+            }
+        if model.startswith("CW917"):
+            return {"known": True, "generation": "Wi-Fi 7", "standard": "802.11be", "sixGhzCapable": True, "label": "Wi-Fi 7 / 802.11be / 2.4, 5, 6 GHz", "source": "model-family inference"}
+        if model.startswith("CW916") or model == "MR57":
+            return {"known": True, "generation": "Wi-Fi 6E", "standard": "802.11ax", "sixGhzCapable": True, "label": "Wi-Fi 6E / 802.11ax / 2.4, 5, 6 GHz", "source": "model-family inference"}
+        if model in {"MR28", "MR36", "MR36H", "MR44", "MR45", "MR46", "MR46E", "MR55", "MR56", "MR76", "MR78", "MR86"}:
+            return {"known": True, "generation": "Wi-Fi 6", "standard": "802.11ax", "sixGhzCapable": False, "label": "Wi-Fi 6 / 802.11ax / 2.4, 5 GHz", "source": "model-family inference"}
+        if model in {"MR20", "MR30H", "MR33", "MR42", "MR42E", "MR52", "MR53", "MR70", "MR74", "MR84"}:
+            return {"known": True, "generation": "Wi-Fi 5", "standard": "802.11ac Wave 2", "sixGhzCapable": False, "label": "Wi-Fi 5 / 802.11ac Wave 2 / 2.4, 5 GHz", "source": "model-family inference"}
+        return {"known": False, "generation": "Unknown", "standard": "Unknown", "sixGhzCapable": False, "label": "Model capability not in AP catalog", "source": "unknown"}
+
+    def _profile_band_context(ap: Dict[str, Any]) -> Dict[str, Any]:
+        profile, exact, name = _assigned_profile(ap)
+        if not isinstance(profile, dict):
+            return {
+                "name": name,
+                "exact": exact,
+                "enabledBands": [],
+                "ssidSixGhzCount": None,
+                "ssidCount": None,
+                "summary": "RF profile assignment/settings not captured",
+            }
+        band_settings = profile.get("apBandSettings") if isinstance(profile.get("apBandSettings"), dict) else {}
+        bands = band_settings.get("bands") if isinstance(band_settings.get("bands"), dict) else {}
+        enabled = [str(b) for b in bands.get("enabled", [])] if isinstance(bands.get("enabled"), list) else []
+        per_ssid = profile.get("perSsidSettings") if isinstance(profile.get("perSsidSettings"), dict) else {}
+        ssid_count = 0
+        ssid_6_count = 0
+        for ssid in per_ssid.values():
+            if not isinstance(ssid, dict):
+                continue
+            ssid_count += 1
+            ssid_bands = ssid.get("bands") if isinstance(ssid.get("bands"), dict) else {}
+            ssid_enabled = ssid_bands.get("enabled") if isinstance(ssid_bands.get("enabled"), list) else []
+            if "6" in [str(b) for b in ssid_enabled]:
+                ssid_6_count += 1
+        source = "exact" if exact else "fallback"
+        enabled_text = ", ".join(enabled) + " GHz" if enabled else "band list unavailable"
+        ssid_text = ""
+        if ssid_count:
+            ssid_text = f"; {ssid_6_count}/{ssid_count} SSID profile(s) expose 6 GHz"
+        return {
+            "name": name,
+            "exact": exact,
+            "enabledBands": enabled,
+            "ssidSixGhzCount": ssid_6_count if ssid_count else None,
+            "ssidCount": ssid_count if ssid_count else None,
+            "summary": f"{name} ({source}); enabled AP bands: {enabled_text}{ssid_text}",
+        }
+
+    def _value_assessment(ap: Dict[str, Any]) -> str:
+        cap = _ap_capability(ap)
+        profile_ctx = _profile_band_context(ap)
+        stats = ap.get("worst_stats") or {}
+        severity = _severity(stats)
+        points: List[str] = []
+        if cap["sixGhzCapable"]:
+            enabled = set(profile_ctx["enabledBands"])
+            ssid_6_count = profile_ctx["ssidSixGhzCount"]
+            if "6" not in enabled:
+                points.append("6 GHz capable AP, but this RF profile does not show 6 GHz enabled.")
+            elif ssid_6_count == 0 and profile_ctx["ssidCount"]:
+                points.append("6 GHz capable AP and profile allows 6 GHz, but SSID profile settings do not appear to expose 6 GHz.")
+            else:
+                points.append("6 GHz capable AP with profile support visible.")
+        if cap["generation"] in {"Wi-Fi 7", "Wi-Fi 6E", "Wi-Fi 6"} and severity["rank"] >= 4:
+            points.append(f"Current {severity['label'].lower()} interference means the organization may not feel the value of this {cap['generation']} AP until RF is remediated.")
+        if not cap["sixGhzCapable"] and cap["generation"] in {"Wi-Fi 5", "Wi-Fi 5-era", "Legacy", "Unknown"} and severity["rank"] >= 4:
+            points.append("Do not spend refresh money until RF noise/overlap is corrected; replacement hardware would inherit the same spectrum problem.")
+        if not points:
+            points.append("No obvious hardware value blocker from this telemetry window.")
+        if not profile_ctx["exact"]:
+            points.append("RF profile assignment is not exact in this backup; rerun data collection with RF profile assignments for stronger per-AP conclusions.")
+        return " ".join(points)
 
     def _client_stats(serial: str, net_id: str) -> Dict[str, int]:
         for item in wireless_stats.get(net_id, []) if isinstance(wireless_stats, dict) else []:
@@ -936,6 +1114,7 @@ def _build_ap_spectrum_report(
                     ),
                 )
             bubble_label, bubble_cls = _bubble(worst_stats)
+            severity = _severity(worst_stats)
             clients = _client_stats(serial, net_id)
             ap_records.append(
                 {
@@ -950,6 +1129,7 @@ def _build_ap_spectrum_report(
                     "worst_stats": worst_stats,
                     "bubble": bubble_label,
                     "bubble_cls": bubble_cls,
+                    "severity": severity,
                     "clients": clients,
                 }
             )
@@ -971,6 +1151,7 @@ def _build_ap_spectrum_report(
                 ),
             )
         bubble_label, bubble_cls = _bubble(worst_stats)
+        severity = _severity(worst_stats)
         ap_records.append(
             {
                 "site": net_data.get("name") or "Unassigned",
@@ -984,6 +1165,7 @@ def _build_ap_spectrum_report(
                 "worst_stats": worst_stats,
                 "bubble": bubble_label,
                 "bubble_cls": bubble_cls,
+                "severity": severity,
                 "clients": _client_stats(serial, net_id),
             }
         )
@@ -1121,36 +1303,41 @@ def _build_ap_spectrum_report(
     def _priority_action(ap: Dict[str, Any]) -> str:
         stats = ap["worst_stats"] or {}
         power = _power_context(ap, ap["worst_band"])
+        value = _value_assessment(ap)
         if stats.get("non_wifi", 0.0) >= 25:
-            return "Find/remove RF noise source; retest before AP replacement. " + power
+            return "Find/remove RF noise source; retest before AP replacement. " + value + " " + power
         if "WAY TOO CLOSE" in ap["bubble"]:
-            return "Validate floor plan; remove, disable, or relocate one AP if physical overlap is confirmed. " + power
+            return "Validate floor plan; remove, disable, or relocate one AP if physical overlap is confirmed. " + value + " " + power
         if "Too close" in ap["bubble"]:
-            return "Tune channel reuse and power; consider relocation/removal if profile is already constrained. " + power
+            return "Tune channel reuse and power; consider relocation/removal if profile is already constrained. " + value + " " + power
         if "Tight" in ap["bubble"]:
-            return "Tune profile/channel width before one-for-one refresh. " + power
+            return "Tune profile/channel width before one-for-one refresh. " + value + " " + power
         return "Monitor; no immediate RF remediation from this telemetry."
+
+    severity_queue = sorted(
+        [ap for ap in with_telemetry if (ap.get("severity") or {}).get("rank", 0) >= 2],
+        key=lambda item: (
+            -(item.get("severity") or {}).get("rank", 0),
+            -(item.get("severity") or {}).get("score", 0.0),
+            item["site"],
+            item["name"],
+        ),
+    )
 
     priority_rows = "".join(
         "<tr>"
         f"<td>{_he(ap['site'])}</td>"
         f"<td>{_he(ap['name'])}<br><code>{_he(ap['serial'])}</code></td>"
+        f"<td>{_he(ap['model'] or 'Unknown')}<br>{_he(_ap_capability(ap)['label'])}</td>"
         f"<td>{_he((ap['worst_band'] + ' GHz') if ap['worst_band'] else 'No data')}</td>"
-        f"<td><span class=\"{ap['bubble_cls']}\">{_he(ap['bubble'])}</span></td>"
+        f"<td><span class=\"{(ap.get('severity') or {}).get('class', ap['bubble_cls'])}\">{_he((ap.get('severity') or {}).get('label', 'Unknown'))}</span><br>{_he(ap['bubble'])}</td>"
         f"<td>{_he(_profile_name(ap))}</td>"
         f"<td>{_he(_priority_action(ap))}</td>"
         "</tr>"
-        for ap in sorted(
-            [*high_pressure, *noise_pressure, *tight_pressure],
-            key=lambda item: (
-                {"check-fail": 0, "check-warning": 1, "check-pass": 2}.get(item["bubble_cls"], 3),
-                item["site"],
-                item["name"],
-            ),
-        )[:18]
+        for ap in severity_queue[:24]
     )
     if not priority_rows:
-        priority_rows = '<tr><td colspan="6" class="empty-state">No APs require immediate RF remediation from this telemetry window.</td></tr>'
+        priority_rows = '<tr><td colspan="7" class="empty-state">No APs require immediate RF remediation from this telemetry window.</td></tr>'
 
     ap_pages = []
     for ap in sorted(
@@ -1163,6 +1350,9 @@ def _build_ap_spectrum_report(
     ):
         stats = ap["worst_stats"] or {}
         clients = ap["clients"]
+        severity = ap.get("severity") or _severity(stats)
+        cap = _ap_capability(ap)
+        profile_ctx = _profile_band_context(ap)
         ap_pages.append(
             f"""
     <section class="report-section ap-unit-page">
@@ -1175,9 +1365,10 @@ def _build_ap_spectrum_report(
         <div class="kpi"><div class="kpi-label">Client Events</div><div class="kpi-value">{clients['assoc']} assoc</div><div class="kpi-note">{clients['auth']} auth / {clients['success']} success</div></div>
       </div>
       <div class="summary-card">
-        <div class="summary-title">Assessment</div>
+        <div class="summary-title">RF / Hardware Fit</div>
         <div class="summary-body">
-          This page estimates RF pressure from Meraki channel-utilization data. It does not claim measured physical distance; AP-to-AP overlap is inferred from Wi-Fi airtime, while non-Wi-Fi utilization is treated as external RF noise that should be investigated separately.
+          <strong>Severity:</strong> <span class="{severity['class']}">{_he(severity['label'])}</span>. <strong>Model:</strong> {_he(cap['label'])} <span class="muted">({_he(str(cap['source']))})</span>. <strong>RF profile:</strong> {_he(profile_ctx['summary'])}. <strong>Value check:</strong> {_he(_value_assessment(ap))}
+          <br><span class="muted">RF pressure is estimated from Meraki channel-utilization telemetry. Wi-Fi airtime is treated as overlap pressure; non-Wi-Fi utilization is treated as external RF noise.</span>
         </div>
       </div>
       <table class="data dense">
@@ -1206,6 +1397,7 @@ def _build_ap_spectrum_report(
         <div class="kpi"><div class="kpi-label">RF Telemetry</div><div class="kpi-value">{len(with_telemetry)}</div><div class="kpi-note">APs with channel utilization</div></div>
         <div class="kpi"><div class="kpi-label">Too Close</div><div class="kpi-value">{len(high_pressure)}</div><div class="kpi-note">High co-channel pressure</div></div>
         <div class="kpi"><div class="kpi-label">RF Noise</div><div class="kpi-value">{len(noise_pressure)}</div><div class="kpi-note">Non-Wi-Fi interference</div></div>
+        <div class="kpi"><div class="kpi-label">Severe+</div><div class="kpi-value">{sum(1 for ap in with_telemetry if (ap.get('severity') or {}).get('rank', 0) >= 5)}</div><div class="kpi-note">Fix before refresh decisions</div></div>
         <div class="kpi"><div class="kpi-label">Missing Data</div><div class="kpi-value">{len(no_telemetry)}</div><div class="kpi-note">Offline/dormant/no channel data</div></div>
       </div>
       <table class="data">
@@ -1218,9 +1410,9 @@ def _build_ap_spectrum_report(
           Clean bubble means no current overlap symptom. Within range means normal overlap for roaming. Tight bubble means tune channel/power/placement. Too close and WAY TOO CLOSE mean AP-to-AP overlap should be reviewed before adding or replacing APs. RF Noise means non-Wi-Fi energy is saturating the band; find the external source before removing APs.
         </div>
       </div>
-      <h3>Recommended RF Work Queue</h3>
+      <h3>Interference Severity Queue</h3>
       <table class="data dense">
-        <thead><tr><th>Site</th><th>AP</th><th>Band</th><th>Symptom</th><th>RF Profile</th><th>Guidance</th></tr></thead>
+        <thead><tr><th>Site</th><th>AP</th><th>Model Capability</th><th>Band</th><th>Severity / Symptom</th><th>RF Profile</th><th>Guidance</th></tr></thead>
         <tbody>{priority_rows}</tbody>
       </table>
     </section>

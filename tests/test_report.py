@@ -879,7 +879,10 @@ class TestBuildOrgReport:
         assert "Same-Band Context / Overlap Candidates" in html
         assert "Current RF profile: Classroom Low Power (exact AP assignment)" in html
         assert "remove, disable, or relocate one AP" in html
-        assert "Recommended RF Work Queue" in html
+        assert "Interference Severity Queue" in html
+        assert "RF / Hardware Fit" in html
+        assert "Wi-Fi 6 / 802.11ax / 2.4, 5 GHz" in html
+        assert "Current severe interference means the organization may not feel the value of this Wi-Fi 6 AP until RF is remediated" in html
         assert "Executive Summary" not in html
 
     def test_ap_spectrum_distinguishes_external_noise_from_ap_overlap(self, tmp_path):
@@ -890,6 +893,12 @@ class TestBuildOrgReport:
             dst = tmp_path / fn
             if os.path.isfile(src):
                 shutil.copy(src, dst)
+
+        devices = json.loads((tmp_path / "devices_availabilities.json").read_text(encoding="utf-8"))
+        for device in devices:
+            if device.get("serial") == "Q2AP-TEST-0001":
+                device["model"] = "CW9176I"
+        (tmp_path / "devices_availabilities.json").write_text(json.dumps(devices), encoding="utf-8")
 
         (tmp_path / "channel_utilization_by_device.json").write_text(
             json.dumps(
@@ -917,6 +926,9 @@ class TestBuildOrgReport:
                         {
                             "id": "rf-stage",
                             "name": "Auditorium",
+                            "apBandSettings": {
+                                "bands": {"enabled": ["2.4", "5"]},
+                            },
                             "fiveGhzSettings": {
                                 "minPower": 8,
                                 "maxPower": 14,
@@ -944,6 +956,10 @@ class TestBuildOrgReport:
 
         html = build_org_report(str(tmp_path), "AP Spectrum Noise Test", report_kind="ap_spectrum")
         assert "External RF saturation / investigate noise" in html
+        assert "Interference Severity Queue" in html
+        assert "Critical" in html
+        assert "Wi-Fi 7 / 802.11be / 2.4, 5, 6 GHz" in html
+        assert "6 GHz capable AP, but this RF profile does not show 6 GHz enabled" in html
         assert "Worst symptom is non-Wi-Fi interference, not AP-to-AP overlap" in html
         assert "Do not remove or replace APs solely because this band is saturated by non-Wi-Fi energy" in html
         assert "Current RF profile: Auditorium (exact AP assignment); 8 dBm min; 14 dBm max; low power ceiling" in html

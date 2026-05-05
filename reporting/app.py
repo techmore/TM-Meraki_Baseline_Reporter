@@ -1505,6 +1505,7 @@ def build_org_report(
         wireless_stats,
         rf_profiles,
         rf_profile_assignments,
+        hardware_catalog,
     )
     config_coverage_html = _build_config_coverage_section(org_dir, networks)
     budget_forecast_html = _build_budget_forecast_section(inventory_summary, pricing_payload)

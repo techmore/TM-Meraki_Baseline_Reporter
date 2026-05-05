@@ -1237,9 +1237,38 @@ def build_html(doc_title: str, body: str) -> str:
       font-size: 22px;
       margin-bottom: 8px;
     }}
+    .ap-unit-page p {{
+      font-size: 9.5px;
+      margin: 4px 0 8px;
+    }}
+    .ap-unit-page .kpi-row {{
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin: 10px 0 12px;
+    }}
+    .ap-unit-page .kpi {{
+      border-radius: 8px;
+      padding: 8px 8px;
+    }}
     .ap-unit-page .kpi-value {{
       font-size: 15px;
       line-height: 1.25;
+    }}
+    .ap-unit-page .summary-card {{
+      border-radius: 8px;
+      margin: 10px 0 12px;
+      padding: 10px 14px;
+    }}
+    .ap-unit-page .summary-body {{
+      font-size: 8.8px;
+      line-height: 1.35;
+    }}
+    .ap-unit-page h3 {{
+      font-size: 12px;
+      margin: 10px 0 6px;
+    }}
+    .ap-unit-page table.data.dense {{
+      font-size: 8px;
     }}
     @media print {{
       .ap-unit-page {{
