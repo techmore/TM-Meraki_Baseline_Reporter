@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PRICING_REFERENCE = ROOT / "reporting" / "reference" / "pricing_reference.json"
 SITE_ENDPOINT_ORDER = [
     "devices",
     "clients",
@@ -142,6 +143,12 @@ def _pct(part: int, total: int) -> str:
     if total <= 0:
         return "0%"
     return f"{round((part / total) * 100)}%"
+
+
+def _money(value: int | float | None) -> str:
+    if not isinstance(value, (int, float)):
+        return "Pricing needed"
+    return f"${value:,.0f}" if float(value).is_integer() else f"${value:,.2f}"
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -737,6 +744,166 @@ def _implementation_plan_rows(
     return rows
 
 
+def _pricing_payload() -> Dict[str, Any]:
+    payload = _load_json(PRICING_REFERENCE, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _pricing_product(payload: Dict[str, Any], key: str) -> Dict[str, Any]:
+    products = payload.get("products") if isinstance(payload.get("products"), dict) else {}
+    product = products.get(key)
+    return product if isinstance(product, dict) else {}
+
+
+def _product_name(product: Dict[str, Any], fallback: str) -> str:
+    return str(product.get("name") or product.get("sku") or fallback)
+
+
+def _product_unit(product: Dict[str, Any]) -> int | float | None:
+    value = product.get("unit_cost")
+    return value if isinstance(value, (int, float)) else None
+
+
+def _product_care(product: Dict[str, Any]) -> int | float | None:
+    value = product.get("ui_care_5yr_unit_cost")
+    return value if isinstance(value, (int, float)) else None
+
+
+def _refresh_product_key(device: Dict[str, Any], legacy_aps: List[str]) -> tuple[str, str, str]:
+    role = _device_role(device)
+    model = _device_model(device)
+    model_l = model.lower()
+    name_model = f"{_device_name(device)} ({model})"
+    if role == "Access Point":
+        if name_model in legacy_aps:
+            note = "Legacy AP refresh candidate; validate mounting form factor and RF design before ordering."
+            return "U7-Pro", "Refresh candidate", note
+        return "", "Retain / monitor", "Current AP family did not match the legacy refresh heuristic."
+    if role == "Switch":
+        if "xg" in model_l and "48" in model_l:
+            return "USW-Pro-XG-48-PoE", "Refresh candidate", "High-speed 48-port switch reference; validate PoE, optics, and uplink design."
+        if "xg" in model_l and "24" in model_l:
+            return "USW-Pro-XG-24-PoE", "Refresh candidate", "High-speed 24-port switch reference; validate PoE, optics, and uplink design."
+        if "48" in model_l:
+            return "USW-Pro-48-POE", "Refresh candidate", "48-port access switch reference; validate PoE budget and uplinks."
+        if "24" in model_l:
+            return "USW-Pro-24-POE", "Refresh candidate", "24-port access switch reference; validate PoE budget and uplinks."
+        return "", "Pricing needed", "Small switch or special form factor; add exact replacement SKU to pricing reference before quoting."
+    if role == "Gateway":
+        if any(token in model_l for token in ("ucg", "udm", "cloud gateway")):
+            return "", "Retain / monitor", "Current gateway family appears active; replace only if capacity, HA, or security requirements change."
+        return "UDM-Pro-Max", "Refresh candidate", "Gateway planning reference; validate firewall, VPN, IDS/IPS, logging, and HA requirements."
+    return "", "Review manually", "Device role did not map to a maintained replacement class."
+
+
+def _hardware_refresh_rows(
+    devices: List[Dict[str, Any]],
+    legacy_aps: List[str],
+    pricing: Dict[str, Any],
+) -> tuple[List[List[Any]], Dict[str, Any]]:
+    grouped: Dict[tuple[str, str, str, str, str], Dict[str, Any]] = {}
+    for device in devices:
+        role = _device_role(device)
+        model = _device_model(device)
+        online = _is_online(device)
+        product_key, action, note = _refresh_product_key(device, legacy_aps)
+        if not online:
+            action = "Excluded pending validation"
+            note = "Offline/inactive in controller; validate physical inventory before quoting replacement."
+            product_key = ""
+        product = _pricing_product(pricing, product_key)
+        product_label = _product_name(product, product_key) if product_key else "Pricing needed"
+        key = (model, role, product_key, action, note)
+        row = grouped.setdefault(
+            key,
+            {
+                "model": model,
+                "role": role,
+                "inventory": 0,
+                "active": 0,
+                "excluded": 0,
+                "product": product_label,
+                "unit": _product_unit(product),
+                "care": _product_care(product),
+                "action": action,
+                "note": note,
+            },
+        )
+        row["inventory"] += 1
+        if online:
+            row["active"] += 1
+        else:
+            row["excluded"] += 1
+
+    rows: List[List[Any]] = []
+    totals = {"hardware": 0.0, "care": 0.0, "priced_active": 0, "unpriced_active": 0, "excluded": 0}
+    for row in sorted(grouped.values(), key=lambda item: (str(item["role"]), str(item["model"]))):
+        active = int(row["active"])
+        excluded = int(row["excluded"])
+        unit = row["unit"]
+        care = row["care"]
+        hardware_total = unit * active if isinstance(unit, (int, float)) and active else None
+        care_total = care * active if isinstance(care, (int, float)) and active else None
+        if hardware_total is not None:
+            totals["hardware"] += hardware_total
+            totals["priced_active"] += active
+        elif active:
+            totals["unpriced_active"] += active
+        if care_total is not None:
+            totals["care"] += care_total
+        totals["excluded"] += excluded
+        rows.append(
+            [
+                row["model"],
+                row["role"],
+                row["inventory"],
+                active,
+                excluded,
+                row["product"],
+                row["action"],
+                _money(unit),
+                _money(care),
+                _money(hardware_total),
+                row["note"],
+            ]
+        )
+    return rows, totals
+
+
+def _hardware_summary_rows(pricing: Dict[str, Any], totals: Dict[str, Any]) -> List[List[Any]]:
+    meta = pricing.get("meta") if isinstance(pricing.get("meta"), dict) else {}
+    notes = meta.get("notes") if isinstance(meta.get("notes"), list) else []
+    return [
+        ["Reference catalog", str(meta.get("name") or "pricing_reference.json"), f"Updated {meta.get('updated') or 'unknown'}; currency {meta.get('currency') or 'USD'}."],
+        ["Priced active devices", str(int(totals.get("priced_active") or 0)), "Only online devices with maintained product mappings are included in the subtotal."],
+        ["Unpriced active devices", str(int(totals.get("unpriced_active") or 0)), "These need exact SKU mapping before client-facing budget use."],
+        ["Excluded devices", str(int(totals.get("excluded") or 0)), "Offline/inactive devices are excluded until field-validated."],
+        ["Hardware subtotal", _money(totals.get("hardware")), "Public-reference hardware subtotal for priced active mapped devices."],
+        ["Optional UI Care 5-year", _money(totals.get("care")), "Shown separately from hardware so support decisions stay explicit."],
+        ["Pricing caution", "Planning only", str(notes[0]) if notes else "Validate all pricing before procurement decisions."],
+    ]
+
+
+def _catalog_reference_rows(pricing: Dict[str, Any]) -> List[List[Any]]:
+    products = pricing.get("products") if isinstance(pricing.get("products"), dict) else {}
+    wanted = {"access_point", "switch", "gateway", "aggregation"}
+    rows: List[List[Any]] = []
+    for key, product in sorted(products.items(), key=lambda item: (str((item[1] or {}).get("category")), str((item[1] or {}).get("name")))):
+        if not isinstance(product, dict) or product.get("category") not in wanted:
+            continue
+        rows.append(
+            [
+                product.get("category", ""),
+                product.get("name") or key,
+                product.get("sku") or key,
+                _money(_product_unit(product)),
+                _money(_product_care(product)),
+                product.get("description", ""),
+            ]
+        )
+    return rows
+
+
 def _executive_followups(
     *,
     all_devices: List[Dict[str, Any]],
@@ -857,6 +1024,8 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     telemetry_available = sum(1 for probe in telemetry_probes if probe.get("available"))
     legacy_aps = _legacy_ap_models(all_devices)
     client_age = _client_age_buckets(all_clients, collected_at)
+    pricing = _pricing_payload()
+    hardware_rows, hardware_totals = _hardware_refresh_rows(all_devices, legacy_aps, pricing)
     cards = [
         ("Sites", len(site_summaries) or len(sm_sites)),
         ("Devices", len(all_devices)),
@@ -1172,7 +1341,20 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     )
     sections.append("</section>")
 
-    sections.append("<section><h2>10. Firewall and Policy Backup</h2>")
+    sections.append("<section><h2>10. Hardware Refresh &amp; Budget Planning</h2>")
+    sections.append("<p>This section uses the maintained pricing reference to create a planning-only hardware refresh view. It prices only online devices that map cleanly to a maintained product reference; offline devices and special form factors stay excluded or marked pricing-needed until field validation.</p>")
+    sections.append("<h3>Planning Summary</h3>")
+    sections.append(_table(["Area", "Value", "Interpretation"], _hardware_summary_rows(pricing, hardware_totals)))
+    sections.append("<h3>Model-Level Refresh Planning</h3>")
+    sections.append(_table(["Current Model", "Role", "Inventory", "Active", "Excluded", "Reference Product", "Action", "Unit", "UI Care / Unit", "Hardware Total", "Notes"], hardware_rows, "No device inventory was available for hardware planning."))
+    catalog_rows = _catalog_reference_rows(pricing)
+    if catalog_rows:
+        sections.append("<h3>Maintained UniFi Reference Catalog</h3>")
+        sections.append(_table(["Category", "Product", "SKU", "Unit", "UI Care / Unit", "Planning Notes"], catalog_rows))
+    sections.append("<p class='muted'>Not included: tax, freight, optics/transceivers, cabling, installation labor, configuration labor, licensing/subscription changes, contingency, or reseller/E-rate discounts.</p>")
+    sections.append("</section>")
+
+    sections.append("<section><h2>11. Firewall and Policy Backup</h2>")
     for site in site_summaries:
         sections.append(f"<h3>{html.escape(str(site.get('name') or 'Site'))}</h3>")
         zones = _read_site_file(source, site, "firewall_zones")
@@ -1216,13 +1398,13 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             sections.append(_table(headers, rows, f"No {label.lower()} endpoint data captured."))
     sections.append("</section>")
 
-    sections.append("<section><h2>11. Raw Backup Files</h2>")
+    sections.append("<section><h2>12. Raw Backup Files</h2>")
     files = sorted(str(p.relative_to(source)) for p in source.rglob("*.json"))
     sections.append(_table(["JSON backup"], [[f] for f in files], "No JSON backup files found."))
     sections.append("</section>")
 
     complete_body = "\n".join(sections)
-    exec_body = _select_sections(complete_body, ("1. Executive Summary", "Guide. How to Use This Report", "9. Recommendations & Implementation Plan"))
+    exec_body = _select_sections(complete_body, ("1. Executive Summary", "Guide. How to Use This Report", "9. Recommendations & Implementation Plan", "10. Hardware Refresh & Budget Planning"))
     backup_body = _select_sections(
         complete_body,
         (
@@ -1230,8 +1412,8 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             "4. Configuration Backup Completeness",
             "6. Sites, Networks, VLANs, and DHCP",
             "8. Security Baseline",
-            "10. Firewall and Policy Backup",
-            "11. Raw Backup Files",
+            "11. Firewall and Policy Backup",
+            "12. Raw Backup Files",
         ),
     )
 
@@ -1303,8 +1485,9 @@ def _html_shell(
         ("7A", "Client Analysis"),
         ("8", "Security Baseline"),
         ("9", "Recommendations & Implementation Plan"),
-        ("10", "Firewall and Policy Backup"),
-        ("11", "Raw Backup Files"),
+        ("10", "Hardware Refresh & Budget Planning"),
+        ("11", "Firewall and Policy Backup"),
+        ("12", "Raw Backup Files"),
     ]
     toc_html = "".join(
         f'<li><span class="toc-num">{html.escape(str(number))}</span><span>{html.escape(str(label))}</span></li>'

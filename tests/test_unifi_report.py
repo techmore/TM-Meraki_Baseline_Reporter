@@ -136,6 +136,10 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Client Concentration by Uplink" in html
     assert "Recommendations &amp; Implementation Plan" in html
     assert "Choose a deeper diagnostics source" in html
+    assert "Hardware Refresh &amp; Budget Planning" in html
+    assert "Model-Level Refresh Planning" in html
+    assert "U7 Pro" in html
+    assert "Pro 48 PoE" in html
     assert "By Model" in html
     assert "Client Load by Uplink" in html
     assert "Firewall Policy Summary" in html
@@ -158,10 +162,12 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "UniFi Executive Summary" in exec_html
     assert "Top Operational Risks" in exec_html
     assert "Recommendations &amp; Implementation Plan" in exec_html
+    assert "Hardware Refresh &amp; Budget Planning" in exec_html
     assert "Firewall and Policy Backup" not in exec_html
     assert "UniFi Backup Settings Report" in backup_html
     assert "Configuration Backup Completeness" in backup_html
     assert "Firewall and Policy Backup" in backup_html
+    assert "Hardware Refresh &amp; Budget Planning" not in backup_html
     assert "Connected Clients" not in backup_html
 
 
