@@ -121,11 +121,21 @@ def build_site_index_html(manifest: Dict[str, object], reports_root: Path, gener
     for profile in profiles:
         reports_dir = Path(str(profile.get("reportsDir") or ""))
         report_pdf = reports_dir / "report.pdf"
+        exec_pdf = reports_dir / "report_exec_summary.pdf"
+        backup_pdf = reports_dir / "report_backup_settings.pdf"
         profile_index = reports_dir / "index.html"
         if report_pdf.exists():
             report_link = f'<a href="{_relative_href(report_pdf, reports_root)}">report.pdf</a>'
         else:
             report_link = "report.pdf"
+        if exec_pdf.exists():
+            exec_link = f'<a href="{_relative_href(exec_pdf, reports_root)}">exec</a>'
+        else:
+            exec_link = "exec"
+        if backup_pdf.exists():
+            backup_link = f'<a href="{_relative_href(backup_pdf, reports_root)}">backup</a>'
+        else:
+            backup_link = "backup"
         if profile_index.exists():
             inventory_link = f'<a href="{_relative_href(profile_index, reports_root)}">index.html</a>'
         else:
@@ -142,6 +152,8 @@ def build_site_index_html(manifest: Dict[str, object], reports_root: Path, gener
             f"<td>{html.escape(_telemetry_summary(profile))}</td>"
             f"<td>{html.escape(_coverage_summary(profile))}</td>"
             f"<td>{report_link}</td>"
+            f"<td>{exec_link}</td>"
+            f"<td>{backup_link}</td>"
             f"<td>{inventory_link}</td>"
             "</tr>"
         )
@@ -172,7 +184,7 @@ def build_site_index_html(manifest: Dict[str, object], reports_root: Path, gener
     <section>
       <p>Saved UniFi profile report outputs for this run.</p>
       <table>
-        <thead><tr><th>Site</th><th>Profile</th><th>Collection</th><th>Report</th><th>Devices</th><th>Clients</th><th>Config</th><th>Telemetry</th><th>Coverage</th><th>PDF</th><th>Inventory</th></tr></thead>
+        <thead><tr><th>Site</th><th>Profile</th><th>Collection</th><th>Report</th><th>Devices</th><th>Clients</th><th>Config</th><th>Telemetry</th><th>Coverage</th><th>Complete</th><th>Exec</th><th>Backup</th><th>Inventory</th></tr></thead>
         <tbody>{''.join(rows)}</tbody>
       </table>
     </section>

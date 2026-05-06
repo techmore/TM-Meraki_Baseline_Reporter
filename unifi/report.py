@@ -3,6 +3,7 @@ import argparse
 import html
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -346,6 +347,34 @@ def _html_list(items: List[str], *, ordered: bool = False) -> str:
         return "<p class='muted'>No findings generated.</p>"
     tag = "ol" if ordered else "ul"
     return f"<{tag}>" + "".join(f"<li>{html.escape(item)}</li>" for item in items) + f"</{tag}>"
+
+
+def _section_title(block: str) -> str:
+    match = re.search(r"<h2>(.*?)</h2>", block, re.DOTALL)
+    if not match:
+        return ""
+    return re.sub(r"<[^>]+>", "", match.group(1)).strip()
+
+
+def _select_sections(body: str, wanted_prefixes: Iterable[str]) -> str:
+    prefixes = tuple(wanted_prefixes)
+    blocks = re.findall(r"<section>.*?</section>", body, re.DOTALL)
+    selected = [block for block in blocks if _section_title(block).startswith(prefixes)]
+    return "\n".join(selected)
+
+
+def _toc_items(section_body: str) -> List[tuple[str, str]]:
+    items: List[tuple[str, str]] = []
+    for block in re.findall(r"<section>.*?</section>", section_body, re.DOTALL):
+        title = _section_title(block)
+        if not title:
+            continue
+        if ". " in title:
+            number, label = title.split(". ", 1)
+        else:
+            number, label = "Guide", title.replace("Guide. ", "")
+        items.append((number, label))
+    return items
 
 
 def _read_site_file(source: Path, site_summary: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
@@ -1099,17 +1128,93 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append(_table(["JSON backup"], [[f] for f in files], "No JSON backup files found."))
     sections.append("</section>")
 
-    html_doc = _html_shell("TM UniFi Baseline", "\n".join(sections), metadata)
+    complete_body = "\n".join(sections)
+    exec_body = _select_sections(complete_body, ("1. Executive Summary", "Guide. How to Use This Report"))
+    backup_body = _select_sections(
+        complete_body,
+        (
+            "2. Collection Coverage",
+            "4. Configuration Backup Completeness",
+            "6. Sites, Networks, VLANs, and DHCP",
+            "8. Security Baseline",
+            "9. Firewall and Policy Backup",
+            "10. Raw Backup Files",
+        ),
+    )
+
+    html_doc = _html_shell(
+        "TM UniFi Baseline",
+        complete_body,
+        metadata,
+        report_title="UniFi Network Health & Backup Report",
+        report_subtitle="Complete assessment, configuration evidence, and client visibility.",
+    )
+    exec_doc = _html_shell(
+        "TM UniFi Executive Summary",
+        exec_body,
+        metadata,
+        report_title="UniFi Executive Summary",
+        report_subtitle="Leadership-ready risks, priorities, and data confidence.",
+        toc_items=_toc_items(exec_body),
+    )
+    backup_doc = _html_shell(
+        "TM UniFi Backup Settings",
+        backup_body,
+        metadata,
+        report_title="UniFi Backup Settings Report",
+        report_subtitle="Configuration backup coverage, security policy evidence, and raw JSON index.",
+        toc_items=_toc_items(backup_body),
+    )
     html_path = output / "report.html"
     pdf_path = output / "report.pdf"
+    exec_html_path = output / "report_exec_summary.html"
+    exec_pdf_path = output / "report_exec_summary.pdf"
+    backup_html_path = output / "report_backup_settings.html"
+    backup_pdf_path = output / "report_backup_settings.pdf"
     html_path.write_text(html_doc, encoding="utf-8")
+    exec_html_path.write_text(exec_doc, encoding="utf-8")
+    backup_html_path.write_text(backup_doc, encoding="utf-8")
     rendered = _render_pdf(html_path, pdf_path)
-    return {"html": str(html_path), "pdf": str(pdf_path) if rendered else ""}
+    exec_rendered = _render_pdf(exec_html_path, exec_pdf_path)
+    backup_rendered = _render_pdf(backup_html_path, backup_pdf_path)
+    return {
+        "html": str(html_path),
+        "pdf": str(pdf_path) if rendered else "",
+        "exec_html": str(exec_html_path),
+        "exec_pdf": str(exec_pdf_path) if exec_rendered else "",
+        "backup_html": str(backup_html_path),
+        "backup_pdf": str(backup_pdf_path) if backup_rendered else "",
+    }
 
 
-def _html_shell(title: str, body: str, metadata: Dict[str, Any]) -> str:
+def _html_shell(
+    title: str,
+    body: str,
+    metadata: Dict[str, Any],
+    *,
+    report_title: str = "UniFi Network Health & Backup Report",
+    report_subtitle: str = "TM UniFi Baseline",
+    toc_items: List[tuple[str, str]] | None = None,
+) -> str:
     release = datetime.now().strftime("%Y_%m_%d")
     collected = metadata.get("collectedAt") or "not captured"
+    toc_items = toc_items or [
+        ("1", "Executive Summary"),
+        ("Guide", "How to Use This Report"),
+        ("2", "Collection Coverage"),
+        ("3", "Network Overview"),
+        ("4", "Configuration Backup Completeness"),
+        ("5", "Device Health & Inventory"),
+        ("6", "Sites, Networks, VLANs, and DHCP"),
+        ("7", "WiFi and Client Visibility"),
+        ("8", "Security Baseline"),
+        ("9", "Firewall and Policy Backup"),
+        ("10", "Raw Backup Files"),
+    ]
+    toc_html = "".join(
+        f'<li><span class="toc-num">{html.escape(str(number))}</span><span>{html.escape(str(label))}</span></li>'
+        for number, label in toc_items
+    )
     return f"""<!doctype html>
 <html>
 <head>
@@ -1369,8 +1474,8 @@ def _html_shell(title: str, body: str, metadata: Dict[str, Any]) -> str:
       <div>
         <div class="cover-brand">Techmore</div>
         <div class="cover-rule"></div>
-        <h1 class="cover-title">UniFi Network Health &amp; Backup Report</h1>
-        <p class="cover-subtitle">TM UniFi Baseline</p>
+        <h1 class="cover-title">{html.escape(report_title)}</h1>
+        <p class="cover-subtitle">{html.escape(report_subtitle)}</p>
         <p class="cover-run-ts">Collected: {html.escape(str(collected))}</p>
       </div>
       <div>
@@ -1382,17 +1487,7 @@ def _html_shell(title: str, body: str, metadata: Dict[str, Any]) -> str:
   <section class="toc-page">
     <div class="toc-header">Table of Contents</div>
     <ol class="toc-list">
-      <li><span class="toc-num">1</span><span>Executive Summary</span></li>
-      <li><span class="toc-num">Guide</span><span>How to Use This Report</span></li>
-      <li><span class="toc-num">2</span><span>Collection Coverage</span></li>
-      <li><span class="toc-num">3</span><span>Network Overview</span></li>
-      <li><span class="toc-num">4</span><span>Configuration Backup Completeness</span></li>
-      <li><span class="toc-num">5</span><span>Device Health &amp; Inventory</span></li>
-      <li><span class="toc-num">6</span><span>Sites, Networks, VLANs, and DHCP</span></li>
-      <li><span class="toc-num">7</span><span>WiFi and Client Visibility</span></li>
-      <li><span class="toc-num">8</span><span>Security Baseline</span></li>
-      <li><span class="toc-num">9</span><span>Firewall and Policy Backup</span></li>
-      <li><span class="toc-num">10</span><span>Raw Backup Files</span></li>
+      {toc_html}
     </ol>
   </section>
   {body}
@@ -1422,10 +1517,11 @@ def main(argv: List[str] | None = None) -> int:
     args = parser.parse_args(argv)
     paths = build_report(args.source_dir, args.output_dir)
     if args.pdf_only and paths.get("pdf"):
-        try:
-            Path(paths["html"]).unlink()
-        except FileNotFoundError:
-            pass
+        for key in ("html", "exec_html", "backup_html"):
+            try:
+                Path(paths[key]).unlink()
+            except (KeyError, FileNotFoundError):
+                pass
     print(json.dumps(paths, indent=2))
     return 0
 

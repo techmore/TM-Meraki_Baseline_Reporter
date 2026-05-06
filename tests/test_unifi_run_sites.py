@@ -9,6 +9,8 @@ def test_unifi_site_index_links_profile_reports(tmp_path: Path):
     site_dir = reports_root / "First_Campus"
     site_dir.mkdir(parents=True)
     (site_dir / "report.pdf").write_bytes(b"%PDF-1.4\n")
+    (site_dir / "report_exec_summary.pdf").write_bytes(b"%PDF-1.4\n")
+    (site_dir / "report_backup_settings.pdf").write_bytes(b"%PDF-1.4\n")
     (site_dir / "index.html").write_text("<html></html>", encoding="utf-8")
     manifest = {
         "ok": True,
@@ -41,6 +43,8 @@ def test_unifi_site_index_links_profile_reports(tmp_path: Path):
     assert "margin: 16px 0" in html
     assert "First Campus" in html
     assert 'href="First_Campus/report.pdf"' in html
+    assert 'href="First_Campus/report_exec_summary.pdf"' in html
+    assert 'href="First_Campus/report_backup_settings.pdf"' in html
     assert 'href="First_Campus/index.html"' in html
     assert "site_run_manifest.json" in html
     assert ">12<" in html

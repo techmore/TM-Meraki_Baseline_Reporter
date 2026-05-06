@@ -37,7 +37,11 @@ def build_manifest(backups: Path, reports: Path) -> Dict[str, object]:
     checks = [
         ("collection_summary", backups / "collection_summary.json", True),
         ("report_pdf", reports / "report.pdf", True),
+        ("report_exec_summary_pdf", reports / "report_exec_summary.pdf", True),
+        ("report_backup_settings_pdf", reports / "report_backup_settings.pdf", True),
         ("report_html", reports / "report.html", False),
+        ("report_exec_summary_html", reports / "report_exec_summary.html", False),
+        ("report_backup_settings_html", reports / "report_backup_settings.html", False),
     ]
     items: List[Dict[str, object]] = []
     failed = False

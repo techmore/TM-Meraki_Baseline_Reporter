@@ -112,6 +112,8 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     paths = build_report(str(source), str(output))
 
     html = Path(paths["html"]).read_text(encoding="utf-8")
+    exec_html = Path(paths["exec_html"]).read_text(encoding="utf-8")
+    backup_html = Path(paths["backup_html"]).read_text(encoding="utf-8")
     assert "TM UniFi Baseline" in html
     assert "U7-Pro-1" in html
     assert "IW HD" in html
@@ -148,6 +150,13 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "0 / 2 available" in html
     assert "captured empty" in html
     assert "not exposed (HTTP 404)" in html
+    assert "UniFi Executive Summary" in exec_html
+    assert "Top Operational Risks" in exec_html
+    assert "Firewall and Policy Backup" not in exec_html
+    assert "UniFi Backup Settings Report" in backup_html
+    assert "Configuration Backup Completeness" in backup_html
+    assert "Firewall and Policy Backup" in backup_html
+    assert "Connected Clients" not in backup_html
 
 
 def test_unifi_profiles_discovers_numbered_site_profiles(monkeypatch):
