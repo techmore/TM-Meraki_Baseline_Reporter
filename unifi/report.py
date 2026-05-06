@@ -1281,12 +1281,38 @@ def _refresh_product_key(device: Dict[str, Any], legacy_aps: List[str]) -> tuple
             return "USW-Pro-48-POE", "Refresh candidate", "48-port access switch reference; validate PoE budget and uplinks."
         if "24" in model_l:
             return "USW-Pro-24-POE", "Refresh candidate", "24-port access switch reference; validate PoE budget and uplinks."
+        if any(token in model_l for token in ("flex", "lite", "mini", "usw-8", "usw 8", "enterprise 8")):
+            return "", "Retain / monitor", "Small UniFi switch or edge form factor; keep out of the replacement subtotal unless capacity, PoE, or uplink requirements change."
         return "", "Pricing needed", "Small switch or special form factor; add exact replacement SKU to pricing reference before quoting."
     if role == "Gateway":
         if any(token in model_l for token in ("ucg", "udm", "cloud gateway")):
             return "", "Retain / monitor", "Current gateway family appears active; replace only if capacity, HA, or security requirements change."
         return "UDM-Pro-Max", "Refresh candidate", "Gateway planning reference; validate firewall, VPN, IDS/IPS, logging, and HA requirements."
     return "", "Review manually", "Device role did not map to a maintained replacement class."
+
+
+def _action_requires_pricing(action: str) -> bool:
+    return action in {"Refresh candidate", "Pricing needed", "Review manually"}
+
+
+def _planning_product_label(product: Dict[str, Any], product_key: str, action: str) -> str:
+    if product_key:
+        return _product_name(product, product_key)
+    if action == "Retain / monitor":
+        return "Not in refresh scope"
+    if action == "Excluded pending validation":
+        return "Excluded pending validation"
+    return "Pricing needed"
+
+
+def _planning_money(value: int | float | None, action: str) -> str:
+    if isinstance(value, (int, float)):
+        return _money(value)
+    if action == "Retain / monitor":
+        return "Not quoted"
+    if action == "Excluded pending validation":
+        return "Excluded"
+    return _money(value)
 
 
 def _hardware_refresh_rows(
@@ -1305,7 +1331,7 @@ def _hardware_refresh_rows(
             note = "Offline/inactive in controller; validate physical inventory before quoting replacement."
             product_key = ""
         product = _pricing_product(pricing, product_key)
-        product_label = _product_name(product, product_key) if product_key else "Pricing needed"
+        product_label = _planning_product_label(product, product_key, action)
         key = (model, role, product_key, action, note)
         row = grouped.setdefault(
             key,
@@ -1329,22 +1355,31 @@ def _hardware_refresh_rows(
             row["excluded"] += 1
 
     rows: List[List[Any]] = []
-    totals = {"hardware": 0.0, "care": 0.0, "priced_active": 0, "unpriced_active": 0, "excluded": 0}
+    totals: Dict[str, Any] = {"hardware": 0.0, "care": 0.0, "priced_active": 0, "unpriced_active": 0, "excluded": 0, "actions": {}}
     for row in sorted(grouped.values(), key=lambda item: (str(item["role"]), str(item["model"]))):
         active = int(row["active"])
         excluded = int(row["excluded"])
         unit = row["unit"]
         care = row["care"]
+        action = str(row["action"])
         hardware_total = unit * active if isinstance(unit, (int, float)) and active else None
         care_total = care * active if isinstance(care, (int, float)) and active else None
         if hardware_total is not None:
             totals["hardware"] += hardware_total
             totals["priced_active"] += active
-        elif active:
+        elif active and _action_requires_pricing(action):
             totals["unpriced_active"] += active
         if care_total is not None:
             totals["care"] += care_total
         totals["excluded"] += excluded
+        action_totals = totals["actions"].setdefault(action, {"inventory": 0, "active": 0, "excluded": 0, "hardware": 0.0, "care": 0.0})
+        action_totals["inventory"] += int(row["inventory"])
+        action_totals["active"] += active
+        action_totals["excluded"] += excluded
+        if hardware_total is not None:
+            action_totals["hardware"] += hardware_total
+        if care_total is not None:
+            action_totals["care"] += care_total
         rows.append(
             [
                 row["model"],
@@ -1353,14 +1388,40 @@ def _hardware_refresh_rows(
                 active,
                 excluded,
                 row["product"],
-                row["action"],
-                _money(unit),
-                _money(care),
-                _money(hardware_total),
+                action,
+                _planning_money(unit, action),
+                _planning_money(care, action),
+                _planning_money(hardware_total, action),
                 row["note"],
             ]
         )
     return rows, totals
+
+
+def _hardware_action_summary_rows(totals: Dict[str, Any]) -> List[List[Any]]:
+    actions = totals.get("actions") if isinstance(totals.get("actions"), dict) else {}
+    interpretations = {
+        "Refresh candidate": "Included in the planning subtotal when a maintained reference product is mapped.",
+        "Retain / monitor": "Active equipment that is not currently being replaced in this planning subtotal.",
+        "Pricing needed": "Active equipment that needs a specific SKU or design decision before budget use.",
+        "Excluded pending validation": "Offline/inactive equipment excluded until physical inventory is confirmed.",
+        "Review manually": "Inventory that did not map cleanly to a known role or replacement class.",
+    }
+    order = {"Refresh candidate": 0, "Pricing needed": 1, "Review manually": 2, "Retain / monitor": 3, "Excluded pending validation": 4}
+    rows: List[List[Any]] = []
+    for action, values in sorted(actions.items(), key=lambda item: (order.get(str(item[0]), 99), str(item[0]))):
+        if not isinstance(values, dict):
+            continue
+        rows.append(
+            [
+                action,
+                int(values.get("active") or 0),
+                int(values.get("excluded") or 0),
+                _money(values.get("hardware")),
+                interpretations.get(str(action), "Planning classification from captured inventory."),
+            ]
+        )
+    return rows
 
 
 def _hardware_summary_rows(pricing: Dict[str, Any], totals: Dict[str, Any]) -> List[List[Any]]:
@@ -1369,7 +1430,7 @@ def _hardware_summary_rows(pricing: Dict[str, Any], totals: Dict[str, Any]) -> L
     return [
         ["Reference catalog", str(meta.get("name") or "pricing_reference.json"), f"Updated {meta.get('updated') or 'unknown'}; currency {meta.get('currency') or 'USD'}."],
         ["Priced active devices", str(int(totals.get("priced_active") or 0)), "Only online devices with maintained product mappings are included in the subtotal."],
-        ["Unpriced active devices", str(int(totals.get("unpriced_active") or 0)), "These need exact SKU mapping before client-facing budget use."],
+        ["Unpriced refresh candidates", str(int(totals.get("unpriced_active") or 0)), "Active devices that require a replacement SKU or manual mapping before client-facing budget use."],
         ["Excluded devices", str(int(totals.get("excluded") or 0)), "Offline/inactive devices are excluded until field-validated."],
         ["Hardware subtotal", _money(totals.get("hardware")), "Public-reference hardware subtotal for priced active mapped devices."],
         ["Optional UI Care 5-year", _money(totals.get("care")), "Shown separately from hardware so support decisions stay explicit."],
@@ -1838,6 +1899,8 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append("<p>This section uses the maintained pricing reference to create a planning-only hardware refresh view. It prices only online devices that map cleanly to a maintained product reference; offline devices and special form factors stay excluded or marked pricing-needed until field validation.</p>")
     sections.append("<h3>Planning Summary</h3>")
     sections.append(_table(["Area", "Value", "Interpretation"], _hardware_summary_rows(pricing, hardware_totals)))
+    sections.append("<h3>Refresh Action Summary</h3>")
+    sections.append(_table(["Action", "Active Devices", "Excluded", "Hardware Subtotal", "Interpretation"], _hardware_action_summary_rows(hardware_totals), "No hardware planning actions generated."))
     sections.append("<h3>Model-Level Refresh Planning</h3>")
     sections.append(_table(["Current Model", "Role", "Inventory", "Active", "Excluded", "Reference Product", "Action", "Unit", "UI Care / Unit", "Hardware Total", "Notes"], hardware_rows, "No device inventory was available for hardware planning."))
     catalog_rows = _catalog_reference_rows(pricing)

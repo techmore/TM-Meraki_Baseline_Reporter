@@ -124,6 +124,8 @@ This project is currently functional as a Python reporting pipeline. The immedia
   captured-empty, and unsupported endpoint coverage.~~
 - ~~Split UniFi per-device telemetry probes by sampled AP, switch, and gateway
   roles so future exposed endpoints can be attributed to the right hardware.~~
+- ~~Clarify UniFi hardware planning so retained active gear is not counted as
+  unpriced refresh scope, and summarize refresh/retain/excluded actions.~~
 - Add deeper UniFi switch/AP port and radio telemetry when the controller API
   exposes it.
 

@@ -50,7 +50,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
                         "telemetry_probe": "sites/Main/telemetry_probe.json",
                     },
                     "counts": {
-                        "devices": 3,
+                        "devices": 4,
                         "clients": 1,
                         "networks": 1,
                         "wifi": 1,
@@ -76,6 +76,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
                 {"id": "ap-1", "name": "U7-Pro-1", "model": "U7-Pro", "type": "access point", "state": "ONLINE", "ipAddress": "10.1.1.10", "interfaces": ["ports", "radios"], "features": ["accessPoint"]},
                 {"name": "IW HD", "model": "IW HD", "features": ["switching", "accessPoint"], "interfaces": ["ports", "radios"], "state": "ONLINE", "ipAddress": "10.1.1.11"},
                 {"name": "USW-48", "model": "USW-Pro-48-PoE", "type": "switch", "state": "ONLINE", "ipAddress": "10.1.1.20", "interfaces": ["ports"], "features": ["switching"]},
+                {"name": "USW Flex 2.5G 5", "model": "USW Flex 2.5G 5", "type": "switch", "state": "ONLINE", "ipAddress": "10.1.1.21", "interfaces": ["ports"], "features": ["switching"]},
             ]
         ),
         encoding="utf-8",
@@ -194,6 +195,12 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Recommendations &amp; Implementation Plan" in html
     assert "Choose a deeper diagnostics source" in html
     assert "Hardware Refresh &amp; Budget Planning" in html
+    assert "Refresh Action Summary" in html
+    assert "Unpriced refresh candidates" in html
+    assert "Retain / monitor" in html
+    assert "Not in refresh scope" in html
+    assert "Not quoted" in html
+    assert "Small UniFi switch or edge form factor" in html
     assert "Model-Level Refresh Planning" in html
     assert "U7 Pro" in html
     assert "Pro 48 PoE" in html
