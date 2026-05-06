@@ -81,11 +81,26 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
         encoding="utf-8",
     )
     (site_dir / "clients.json").write_text(
-        json.dumps([{"hostname": "client-1", "type": "WIRELESS", "ipAddress": "10.10.0.50", "uplinkDeviceId": "ap-1", "access": {"type": "DEFAULT"}}]),
+        json.dumps([{"hostname": "client-1", "type": "WIRELESS", "ipAddress": "10.100.0.50", "uplinkDeviceId": "ap-1", "access": {"type": "DEFAULT"}}]),
         encoding="utf-8",
     )
     (site_dir / "networks.json").write_text(
-        json.dumps([{"name": "Staff", "vlanId": 100, "subnet": "10.100.0.0/16", "dhcpMode": "server", "zoneId": "zone-1", "metadata": {"origin": "USER_DEFINED"}}]),
+        json.dumps(
+            [
+                {
+                    "name": "Staff",
+                    "vlanId": 100,
+                    "subnet": "10.100.0.0/16",
+                    "gateway": "10.100.0.1",
+                    "dhcpMode": "server",
+                    "dhcpRangeStart": "10.100.0.10",
+                    "dhcpRangeEnd": "10.100.0.250",
+                    "dnsServers": ["10.10.0.5"],
+                    "zoneId": "zone-1",
+                    "metadata": {"origin": "USER_DEFINED"},
+                }
+            ]
+        ),
         encoding="utf-8",
     )
     (site_dir / "wifi.json").write_text(
@@ -203,6 +218,13 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "HTTP 404" in html
     assert "Configuration Backup Completeness" in html
     assert "Networks / VLANs" in html
+    assert "Configured Networks / VLANs" in html
+    assert "Observed Client Address Space" in html
+    assert "10.100.0.0/16" in html
+    assert "10.100.0.10 - 10.100.0.250" in html
+    assert "10.100.0.0/24" in html
+    assert "Staff (VLAN 100)" in html
+    assert "not an authoritative DHCP lease export" in html
     assert "0 / 2 available" in html
     assert "captured empty" in html
     assert "not exposed (HTTP 404)" in html

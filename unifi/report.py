@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import html
+import ipaddress
 import json
 import os
 import re
@@ -637,6 +638,136 @@ def _network_service_summary_rows(site: Dict[str, Any], source: Path) -> List[Li
         ("dns_policies", "DNS policies"),
     ):
         rows.append([label, _service_endpoint_state(_read_site_file(source, site, key))])
+    return rows
+
+
+def _network_flags(netw: Dict[str, Any]) -> str:
+    flags: List[str] = []
+    if _as_bool(netw.get("default")):
+        flags.append("default")
+    management = _first(netw, ("management",))
+    if management:
+        flags.append(f"mgmt {management}")
+    return ", ".join(flags)
+
+
+def _network_subnet(netw: Dict[str, Any]) -> str:
+    return _first(netw, ("subnet", "cidr", "ipSubnet", "ipv4Subnet", "networkAddress", "ipAddress"))
+
+
+def _network_gateway(netw: Dict[str, Any]) -> str:
+    return _first(netw, ("gateway", "gatewayIp", "gatewayAddress", "routerIp"))
+
+
+def _network_dhcp_mode(netw: Dict[str, Any]) -> str:
+    dhcp = netw.get("dhcp")
+    if isinstance(dhcp, dict):
+        return _first(dhcp, ("mode", "type", "enabled"), _first(netw, ("dhcpMode", "dhcpRelay", "dhcpServer")))
+    return _first(netw, ("dhcpMode", "dhcpRelay", "dhcpServer", "dhcpEnabled"))
+
+
+def _network_dhcp_range(netw: Dict[str, Any]) -> str:
+    dhcp = netw.get("dhcp")
+    if isinstance(dhcp, dict):
+        start = _first(dhcp, ("start", "rangeStart", "startAddress"))
+        end = _first(dhcp, ("end", "rangeEnd", "endAddress"))
+    else:
+        start = _first(netw, ("dhcpRangeStart", "dhcpStart", "rangeStart", "dhcpStartAddress"))
+        end = _first(netw, ("dhcpRangeEnd", "dhcpEnd", "rangeEnd", "dhcpEndAddress"))
+    if start and end:
+        return f"{start} - {end}"
+    return start or end
+
+
+def _network_dns(netw: Dict[str, Any]) -> str:
+    dhcp = netw.get("dhcp")
+    if isinstance(dhcp, dict):
+        nested = _compact_value(dhcp.get("dnsServers") or dhcp.get("dns") or dhcp.get("nameservers"))
+        if nested:
+            return nested
+    return _compact_value(netw.get("dnsServers") or netw.get("dns") or netw.get("nameservers"))
+
+
+def _network_rows(networks: List[Dict[str, Any]], zone_names: Dict[str, str]) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+    for netw in networks:
+        metadata_payload = netw.get("metadata") if isinstance(netw.get("metadata"), dict) else {}
+        rows.append(
+            [
+                _first(netw, ("name", "displayName")),
+                _first(netw, ("vlanId", "vlan", "vlan_id")),
+                _yes_no(netw.get("enabled")),
+                _network_flags(netw),
+                _network_subnet(netw),
+                _network_gateway(netw),
+                _network_dhcp_mode(netw),
+                _network_dhcp_range(netw),
+                _network_dns(netw),
+                zone_names.get(str(netw.get("zoneId") or ""), _first(netw, ("zoneId",))),
+                _first(metadata_payload, ("origin",)),
+            ]
+        )
+    return rows
+
+
+def _client_ip(client: Dict[str, Any]) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    raw = _first(client, ("ipAddress", "ip"))
+    if not raw:
+        return None
+    try:
+        return ipaddress.ip_address(raw)
+    except ValueError:
+        return None
+
+
+def _network_for_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address, networks: List[Dict[str, Any]]) -> str:
+    for netw in networks:
+        subnet = _network_subnet(netw)
+        if not subnet:
+            continue
+        try:
+            parsed = ipaddress.ip_network(subnet, strict=False)
+        except ValueError:
+            continue
+        if address.version == parsed.version and address in parsed:
+            name = _first(netw, ("name", "displayName"), "Network")
+            vlan = _first(netw, ("vlanId", "vlan", "vlan_id"))
+            return f"{name} (VLAN {vlan})" if vlan else name
+    return "not matched to captured subnet"
+
+
+def _client_address_observation_rows(clients: List[Dict[str, Any]], networks: List[Dict[str, Any]]) -> List[List[Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for client in clients:
+        address = _client_ip(client)
+        if not address or address.version != 4:
+            continue
+        prefix = ipaddress.ip_network(f"{address}/24", strict=False)
+        key = str(prefix)
+        row = grouped.setdefault(key, {"addresses": [], "types": {}, "uplinks": {}, "matched": ""})
+        row["addresses"].append(address)
+        client_type = _first(client, ("type", "connectionType"), "Unknown")
+        row["types"][client_type] = row["types"].get(client_type, 0) + 1
+        uplink = _first(client, ("uplinkDeviceName", "uplinkDeviceId", "uplinkDeviceMac"), "Unknown")
+        row["uplinks"][uplink] = row["uplinks"].get(uplink, 0) + 1
+        row["matched"] = row["matched"] or _network_for_ip(address, networks)
+
+    rows: List[List[Any]] = []
+    for prefix, data in sorted(grouped.items(), key=lambda item: (-len(item[1]["addresses"]), item[0])):
+        addresses = sorted(data["addresses"])
+        first_last = f"{addresses[0]} - {addresses[-1]}" if addresses else ""
+        top_uplinks = ", ".join(f"{key}: {value}" for key, value in list(sorted(data["uplinks"].items(), key=lambda kv: (-kv[1], kv[0])))[:3])
+        rows.append(
+            [
+                prefix,
+                len(addresses),
+                first_last,
+                _fmt_counts(dict(sorted(data["types"].items(), key=lambda kv: (-kv[1], kv[0])))),
+                data["matched"],
+                top_uplinks,
+                "observed clients only; not an authoritative DHCP lease export",
+            ]
+        )
     return rows
 
 
@@ -1476,24 +1607,17 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append("</section>")
 
     sections.append("<section><h2>6. Sites, Networks, VLANs, and DHCP</h2>")
+    sections.append("<p>This section renders configured network/VLAN fields when the UniFi API exposes them, then separately summarizes observed client address space. The observed address table is useful for planning, but it is not a full DHCP lease export.</p>")
     for site in site_summaries:
         sections.append(f"<h3>{html.escape(str(site.get('name') or site.get('id') or 'Site'))}</h3>")
         networks = _read_site_file(source, site, "networks")
+        clients = _read_site_file(source, site, "clients")
         zones = _read_site_file(source, site, "firewall_zones")
         zone_names = {str(zone.get("id")): str(zone.get("name") or zone.get("id")) for zone in zones if zone.get("id")}
-        rows = []
-        for netw in networks:
-            metadata_payload = netw.get("metadata") if isinstance(netw.get("metadata"), dict) else {}
-            rows.append([
-                _first(netw, ("name", "displayName")),
-                _first(netw, ("vlanId", "vlan", "vlan_id")),
-                _yes_no(netw.get("enabled")),
-                _yes_no(netw.get("default")),
-                _first(netw, ("management",)),
-                zone_names.get(str(netw.get("zoneId") or ""), _first(netw, ("zoneId",))),
-                _first(metadata_payload, ("origin",)),
-            ])
-        sections.append(_table(["Network", "VLAN", "Enabled", "Default", "Management", "Zone", "Origin"], rows, "No network/VLAN endpoint data captured for this site."))
+        sections.append("<h4>Configured Networks / VLANs</h4>")
+        sections.append(_table(["Network", "VLAN", "Enabled", "Flags", "Subnet", "Gateway", "DHCP", "DHCP Range", "DNS", "Zone", "Origin"], _network_rows(networks, zone_names), "No network/VLAN endpoint data captured for this site."))
+        sections.append("<h4>Observed Client Address Space</h4>")
+        sections.append(_table(["Observed Prefix", "Clients", "Observed IP Range", "Client Mix", "Matched Network", "Top Uplinks", "Confidence"], _client_address_observation_rows(clients, networks), "No client IP addresses captured for this site."))
     if not site_summaries:
         sections.append("<p class='muted'>No local Network Application site detail captured yet.</p>")
     sections.append("</section>")
