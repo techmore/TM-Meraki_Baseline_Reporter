@@ -805,6 +805,48 @@ def _network_rows(networks: List[Dict[str, Any]], zone_names: Dict[str, str]) ->
     return rows
 
 
+def _network_detail_counts(networks: List[Dict[str, Any]]) -> Dict[str, int]:
+    return {
+        "total": len(networks),
+        "subnet": sum(1 for network in networks if _network_subnet(network)),
+        "gateway": sum(1 for network in networks if _network_gateway(network)),
+        "dhcp_mode": sum(1 for network in networks if _network_dhcp_mode(network)),
+        "dhcp_range": sum(1 for network in networks if _network_dhcp_range(network)),
+    }
+
+
+def _network_detail_finding(networks: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    counts = _network_detail_counts(networks)
+    total = counts["total"]
+    if not total:
+        return None
+    if not any(counts[key] for key in ("subnet", "gateway", "dhcp_mode", "dhcp_range")):
+        return {
+            "status": "Low detail",
+            "summary": f"{_plural(total, 'network/VLAN definition')} captured, but none expose subnet, gateway, DHCP mode, or DHCP range fields from this API path.",
+            "counts": counts,
+        }
+    if counts["subnet"] < total or counts["gateway"] < total or (counts["dhcp_mode"] == 0 and counts["dhcp_range"] == 0):
+        return {
+            "status": "Partial",
+            "summary": f"{_plural(total, 'network/VLAN definition')} captured; detail coverage is subnet {counts['subnet']}/{total}, gateway {counts['gateway']}/{total}, DHCP mode {counts['dhcp_mode']}/{total}, DHCP range {counts['dhcp_range']}/{total}.",
+            "counts": counts,
+        }
+    return None
+
+
+def _network_detail_rows(networks: List[Dict[str, Any]]) -> List[List[Any]]:
+    counts = _network_detail_counts(networks)
+    total = counts["total"]
+    return [
+        ["Networks / VLANs captured", total, "Configured network objects returned by the Network Integration API."],
+        ["Subnet fields", f"{counts['subnet']} / {total}", "Needed to match configured VLANs to observed client address space."],
+        ["Gateway fields", f"{counts['gateway']} / {total}", "Needed for router/SVI and disaster-recovery documentation."],
+        ["DHCP mode fields", f"{counts['dhcp_mode']} / {total}", "Needed to identify server, relay, or externally managed DHCP behavior."],
+        ["DHCP range fields", f"{counts['dhcp_range']} / {total}", "Needed for authoritative lease-scope and migration planning."],
+    ]
+
+
 def _client_ip(client: Dict[str, Any]) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     raw = _first(client, ("ipAddress", "ip"))
     if not raw:
@@ -1086,6 +1128,7 @@ def _top_risks(
     all_devices: List[Dict[str, Any]],
     all_clients: List[Dict[str, Any]],
     device_names: Dict[str, str],
+    all_networks: List[Dict[str, Any]],
     all_wifi: List[Dict[str, Any]],
     all_firewall_policies: List[Dict[str, Any]],
     all_dns_policies: List[Dict[str, Any]],
@@ -1109,6 +1152,10 @@ def _top_risks(
     default_access = _default_client_access_finding(all_clients)
     if default_access:
         risks.append(f"Client access policy appears flat - {default_access['default']} of {default_access['total']} captured clients ({default_access['share']}%) use DEFAULT access; validate guest, IoT, staff, and trusted-device separation.")
+
+    network_detail = _network_detail_finding(all_networks)
+    if network_detail:
+        risks.append(f"Network/DHCP backup detail is incomplete - {network_detail['summary']} Capture controller UI export or screenshots before using this backup as the authoritative address plan.")
 
     risks.extend(_wifi_security_weak(all_wifi)[:3])
 
@@ -1138,6 +1185,7 @@ def _recommended_priorities(
     all_devices: List[Dict[str, Any]],
     all_clients: List[Dict[str, Any]],
     device_names: Dict[str, str],
+    all_networks: List[Dict[str, Any]],
     all_wifi: List[Dict[str, Any]],
     telemetry_probes: List[Dict[str, Any]],
     all_firewall_policies: List[Dict[str, Any]],
@@ -1155,6 +1203,9 @@ def _recommended_priorities(
     default_access = _default_client_access_finding(all_clients)
     if default_access:
         priorities.append(f"Short-term (2-6 weeks): Review UniFi client access policy design because {default_access['default']} of {default_access['total']} captured clients use DEFAULT access.")
+    network_detail = _network_detail_finding(all_networks)
+    if network_detail:
+        priorities.append("Short-term (2-6 weeks): Complete VLAN, subnet, gateway, and DHCP-scope documentation from the UniFi controller UI/export because the API backup did not expose full address-plan fields.")
     if _wifi_security_weak(all_wifi):
         priorities.append("Short-term (2-6 weeks): Review SSID security and migrate appropriate production WLANs toward WPA3, private PSK, or 802.1X instead of shared WPA2 Personal.")
     if all_firewall_policies and any(not _as_bool(policy.get("loggingEnabled")) for policy in all_firewall_policies):
@@ -1169,16 +1220,18 @@ def _data_confidence_rows(
     *,
     all_devices: List[Dict[str, Any]],
     all_clients: List[Dict[str, Any]],
+    all_networks: List[Dict[str, Any]],
     network_count: int,
     firewall_policy_count: int,
     telemetry_probes: List[Dict[str, Any]],
     all_wans: List[Dict[str, Any]],
 ) -> List[List[Any]]:
     telemetry_available = sum(1 for probe in telemetry_probes if probe.get("available"))
+    network_detail = _network_detail_finding(all_networks)
     return [
         ["Inventory and device status", "High" if all_devices else "Low", f"{_plural(len(all_devices), 'device record')} captured with controller state."],
         ["Client attachment detail", "High" if all_clients else "Low", f"{_plural(len(all_clients), 'client record')} captured with uplink mapping where present."],
-        ["VLAN/network definitions", "Medium" if network_count else "Low", f"{_plural(network_count, 'network/VLAN definition')} captured; subnet/DHCP detail depends on API fields exposed by this controller."],
+        ["VLAN/network definitions", "Low" if network_detail else ("Medium" if network_count else "Low"), network_detail["summary"] if network_detail else f"{_plural(network_count, 'network/VLAN definition')} captured with subnet/DHCP fields where exposed."],
         ["Firewall policy backup", "High" if firewall_policy_count else "Low", f"{_plural(firewall_policy_count, 'policy', 'policies')} captured."],
         ["WAN detail", "Low" if all_wans else "Not captured", f"{_plural(len(all_wans), 'WAN record')} captured; current endpoint only exposed labels in this run."],
         ["Port and radio telemetry", "Low" if telemetry_available == 0 else "Medium", _telemetry_gap_summary(telemetry_probes)],
@@ -1188,6 +1241,7 @@ def _data_confidence_rows(
 def _security_baseline_rows(
     *,
     all_clients: List[Dict[str, Any]],
+    all_networks: List[Dict[str, Any]],
     all_wifi: List[Dict[str, Any]],
     all_firewall_policies: List[Dict[str, Any]],
     all_dns_policies: List[Dict[str, Any]],
@@ -1198,6 +1252,7 @@ def _security_baseline_rows(
     logging_enabled = sum(1 for policy in all_firewall_policies if _as_bool(policy.get("loggingEnabled")))
     broad_allow = _broad_allow_policy_summary(all_firewall_policies)
     default_access = _default_client_access_finding(all_clients)
+    network_detail = _network_detail_finding(all_networks)
     if broad_allow.get("user", 0):
         broad_allow_status = "Review"
     elif broad_allow.get("total", 0):
@@ -1206,6 +1261,11 @@ def _security_baseline_rows(
         broad_allow_status = "Not detected"
     return [
         ["Network segmentation", "Review" if network_count <= 2 else "Present", f"{_plural(network_count, 'network/VLAN definition')} captured."],
+        [
+            "Subnet / DHCP backup",
+            "Review" if network_detail else ("Present" if network_count else "Not captured"),
+            f"{network_detail['summary']} Treat observed client addresses as planning evidence until authoritative DHCP scopes are exported." if network_detail else f"{_plural(network_count, 'network/VLAN definition')} captured with address-plan fields where exposed.",
+        ],
         [
             "Client access policy",
             "Review" if default_access else ("Present" if all_clients else "Not captured"),
@@ -1262,6 +1322,7 @@ def _implementation_plan_rows(
     all_devices: List[Dict[str, Any]],
     all_clients: List[Dict[str, Any]],
     device_names: Dict[str, str],
+    all_networks: List[Dict[str, Any]],
     all_wifi: List[Dict[str, Any]],
     all_firewall_policies: List[Dict[str, Any]],
     all_dns_policies: List[Dict[str, Any]],
@@ -1275,6 +1336,7 @@ def _implementation_plan_rows(
     logging_disabled = sum(1 for policy in all_firewall_policies if not _as_bool(policy.get("loggingEnabled")))
     client_concentration = _client_concentration_findings(all_clients, device_names)
     default_access = _default_client_access_finding(all_clients)
+    network_detail = _network_detail_finding(all_networks)
 
     if offline:
         rows.append(["Immediate", "0-2 weeks", "Validate offline inventory", f"{', '.join(offline[:6])}", "IT operations"])
@@ -1285,6 +1347,8 @@ def _implementation_plan_rows(
         rows.append(["Short-term", "2-6 weeks", "Validate concentrated client load", f"{finding['uplink']} has {finding['count']} of {finding['total']} captured clients ({finding['share']}%)", "Network engineering"])
     if default_access:
         rows.append(["Short-term", "2-6 weeks", "Review client access policy segmentation", f"{default_access['default']} of {default_access['total']} captured clients use DEFAULT access", "Security / network engineering"])
+    if network_detail:
+        rows.append(["Short-term", "2-6 weeks", "Complete VLAN/DHCP documentation", network_detail["summary"], "Network engineering"])
     if weak_wifi:
         rows.append(["Short-term", "2-6 weeks", "Review SSID security posture", "; ".join(weak_wifi[:2]), "Security / network engineering"])
     if logging_disabled:
@@ -1669,6 +1733,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
         all_devices=all_devices,
         all_clients=all_clients,
         device_names=device_names,
+        all_networks=site_payloads["networks"],
         all_wifi=site_payloads["wifi"],
         all_firewall_policies=site_payloads["firewall_policies"],
         all_dns_policies=site_payloads["dns_policies"],
@@ -1684,6 +1749,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
                 all_devices=all_devices,
                 all_clients=all_clients,
                 device_names=device_names,
+                all_networks=site_payloads["networks"],
                 all_wifi=site_payloads["wifi"],
                 telemetry_probes=telemetry_probes,
                 all_firewall_policies=site_payloads["firewall_policies"],
@@ -1747,6 +1813,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             _data_confidence_rows(
                 all_devices=all_devices,
                 all_clients=all_clients,
+                all_networks=site_payloads["networks"],
                 network_count=network_count,
                 firewall_policy_count=firewall_policy_count,
                 telemetry_probes=telemetry_probes,
@@ -1878,6 +1945,9 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
         clients = _read_site_file(source, site, "clients")
         zones = _read_site_file(source, site, "firewall_zones")
         zone_names = {str(zone.get("id")): str(zone.get("name") or zone.get("id")) for zone in zones if zone.get("id")}
+        if _network_detail_finding(networks):
+            sections.append("<h4>Network Address Detail Coverage</h4>")
+            sections.append(_table(["Area", "Coverage", "Planning Use"], _network_detail_rows(networks)))
         sections.append("<h4>Configured Networks / VLANs</h4>")
         sections.append(_table(["Network", "VLAN", "Enabled", "Flags", "Subnet", "Gateway", "DHCP", "DHCP Range", "DNS", "Zone", "Origin"], _network_rows(networks, zone_names), "No network/VLAN endpoint data captured for this site."))
         sections.append("<h4>Observed Client Address Space</h4>")
@@ -1933,6 +2003,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             ["Control Area", "Status", "Evidence / Interpretation"],
             _security_baseline_rows(
                 all_clients=all_clients,
+                all_networks=site_payloads["networks"],
                 all_wifi=site_payloads["wifi"],
                 all_firewall_policies=site_payloads["firewall_policies"],
                 all_dns_policies=site_payloads["dns_policies"],
@@ -1953,6 +2024,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
                 all_devices=all_devices,
                 all_clients=all_clients,
                 device_names=device_names,
+                all_networks=site_payloads["networks"],
                 all_wifi=site_payloads["wifi"],
                 all_firewall_policies=site_payloads["firewall_policies"],
                 all_dns_policies=site_payloads["dns_policies"],

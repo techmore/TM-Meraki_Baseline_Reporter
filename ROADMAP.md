@@ -130,6 +130,8 @@ This project is currently functional as a Python reporting pipeline. The immedia
   risks, priorities, and implementation planning.~~
 - ~~Promote flat DEFAULT client access policy usage into UniFi executive,
   security baseline, and implementation planning sections.~~
+- ~~Promote missing UniFi subnet/gateway/DHCP fields into executive,
+  confidence, security baseline, and implementation planning sections.~~
 - Add deeper UniFi switch/AP port and radio telemetry when the controller API
   exposes it.
 

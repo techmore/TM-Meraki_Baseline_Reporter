@@ -3,7 +3,7 @@ from pathlib import Path
 
 from unifi.client import UniFiRequestError
 from unifi.collect import _call_list, _collect_telemetry_probes
-from unifi.report import build_report
+from unifi.report import build_report, _network_detail_finding
 from unifi.profiles import discover_site_profiles
 
 
@@ -288,6 +288,19 @@ def test_unifi_profiles_discovers_numbered_site_profiles(monkeypatch):
     assert profiles[0].safe_name == "First_Campus"
     assert profiles[0].env_updates()["UNIFI_NETWORK_CONSOLE_ID"] == "console-1"
     assert profiles[1].env_updates()["UNIFI_NETWORK_BASE_URL"] == "https://10.0.0.1"
+
+
+def test_unifi_report_network_detail_finding_flags_missing_address_fields():
+    finding = _network_detail_finding(
+        [
+            {"name": "Default", "vlanId": 1},
+            {"name": "Guest", "vlanId": 100},
+        ]
+    )
+
+    assert finding is not None
+    assert finding["status"] == "Low detail"
+    assert "none expose subnet, gateway, DHCP mode, or DHCP range" in finding["summary"]
 
 
 def test_unifi_report_surfaces_remote_connector_auth_guidance(tmp_path: Path):
