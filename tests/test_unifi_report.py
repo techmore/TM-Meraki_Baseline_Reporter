@@ -204,6 +204,9 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "IP: 224.0.0.0/24" in html
     assert "IPv4 and IPv6; UDP" in html
     assert "Broad allow policies" in html
+    assert "system-defined" in html
+    assert "controller/system defaults" in html
+    assert "enabled user-defined broad allow" not in html
     assert "Network Services Backup" in html
     assert "Internet 1" in html
     assert "Corp VPN" in html
@@ -213,6 +216,8 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Firmware" in html
     assert "Network Application version" in html
     assert "10.3.58" in html
+    assert "Telemetry Recovery Plan" in html
+    assert "API limitation" in html
     assert "Interface Telemetry Coverage" in html
     assert "ports, radios" in html
     assert "capability flag only" in html
@@ -239,6 +244,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Firewall and Policy Backup" not in exec_html
     assert "UniFi Backup Settings Report" in backup_html
     assert "Configuration Backup Completeness" in backup_html
+    assert "Telemetry Recovery Plan" in backup_html
     assert "Firewall and Policy Backup" in backup_html
     assert "Network Services Backup" in backup_html
     assert "Hardware Refresh &amp; Budget Planning" not in backup_html

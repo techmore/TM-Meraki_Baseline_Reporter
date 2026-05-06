@@ -523,13 +523,47 @@ def _policy_origin_label(policy: Dict[str, Any]) -> str:
     return ""
 
 
-def _broad_allow_policy_count(policies: Iterable[Dict[str, Any]]) -> int:
-    count = 0
+def _policy_origin_group(policy: Dict[str, Any]) -> str:
+    origin = _policy_origin_label(policy) or _first(policy, ("origin", "source"))
+    origin = origin.upper().strip()
+    if origin in {"SYSTEM_DEFINED", "SYSTEM", "DEFAULT"}:
+        return "system"
+    if origin in {"USER_DEFINED", "USER", "CUSTOM"}:
+        return "user"
+    return "other"
+
+
+def _is_broad_allow_policy(policy: Dict[str, Any]) -> bool:
+    name = _first(policy, ("name", "description", "id")).strip().lower()
+    return _as_bool(policy.get("enabled")) and _action_label(policy).upper().startswith("ALLOW") and "allow all" in name
+
+
+def _broad_allow_policy_summary(policies: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    summary = {"total": 0, "system": 0, "user": 0, "other": 0}
     for policy in policies:
-        name = _first(policy, ("name", "description", "id")).strip().lower()
-        if _as_bool(policy.get("enabled")) and _action_label(policy).upper().startswith("ALLOW") and "allow all" in name:
-            count += 1
-    return count
+        if not _is_broad_allow_policy(policy):
+            continue
+        origin = _policy_origin_group(policy)
+        summary["total"] += 1
+        summary[origin] = summary.get(origin, 0) + 1
+    return summary
+
+
+def _broad_allow_policy_interpretation(summary: Dict[str, int]) -> str:
+    total = summary.get("total", 0)
+    if not total:
+        return "No enabled broad allow policies detected by policy name/action."
+    parts = []
+    for key, label in (("system", "system-defined"), ("user", "user-defined"), ("other", "unknown-origin")):
+        count = summary.get(key, 0)
+        if count:
+            parts.append(f"{count} {label}")
+    detail = ", ".join(parts)
+    if summary.get("user", 0):
+        return f"{_plural(total, 'enabled broad allow policy', 'enabled broad allow policies')} detected ({detail}). Review user-defined broad allows first, then validate default zone posture."
+    if summary.get("system", 0):
+        return f"{_plural(total, 'enabled broad allow policy', 'enabled broad allow policies')} detected ({detail}). These appear to be controller/system defaults; validate zone posture before treating them as custom risk."
+    return f"{_plural(total, 'enabled broad allow policy', 'enabled broad allow policies')} detected ({detail}). Validate policy origin before treating them as intended defaults."
 
 
 def _item_origin_label(item: Dict[str, Any]) -> str:
@@ -954,6 +988,31 @@ def _telemetry_gap_summary(telemetry_probes: List[Dict[str, Any]]) -> str:
     return f"0 of {total} telemetry probe endpoint(s) returned data; observed statuses: {', '.join(statuses)}."
 
 
+def _telemetry_recovery_rows(telemetry_probes: List[Dict[str, Any]], net: Dict[str, Any]) -> List[List[Any]]:
+    connection = _first(net, ("connectionType",), "configured")
+    if not telemetry_probes:
+        return [
+            ["Current API telemetry", "Not captured", "No detailed switch-port or AP-radio telemetry probes were saved in this run."],
+            ["Best recovery source", "Recommended", "Export UniFi Network support data or controller UI screenshots for switch ports, PoE draw, AP channel, AP power, and RF utilization before final migration planning."],
+        ]
+
+    available = sum(1 for probe in telemetry_probes if probe.get("available"))
+    total = len(telemetry_probes)
+    if available:
+        return [
+            ["Current API telemetry", "Partial", f"{available} of {total} detailed telemetry probes returned data from the {connection} Network Integration API path."],
+            ["Planning caution", "Validate", "Use captured telemetry where present, but field-check missing switch-port and AP-radio details before final port maps, PoE budgets, or RF recommendations."],
+            ["Next automation step", "Keep enabled", "Leave telemetry probes in the run so this report automatically improves when the controller/API exposes more structured metrics."],
+        ]
+
+    return [
+        ["Current API telemetry", "Low", f"0 of {total} detailed telemetry probes returned data from the {connection} Network Integration API path."],
+        ["What this means", "API limitation", "Inventory, clients, VLANs, WiFi, and firewall backup can still be useful; this capture cannot validate per-port PoE draw, link speed, AP channel utilization, or RF utilization by itself."],
+        ["Best recovery source", "Recommended", "Export UniFi Network support data or controller UI screenshots for switch ports, PoE draw, AP channel, AP power, and RF utilization before final migration planning."],
+        ["Next automation step", "Keep enabled", "Leave telemetry probes in the run so this report automatically improves when the controller/API exposes more structured metrics."],
+    ]
+
+
 def _wifi_security_weak(wifi: Iterable[Dict[str, Any]]) -> List[str]:
     weak: List[str] = []
     for wlan in wifi:
@@ -1018,6 +1077,9 @@ def _top_risks(
         logging_disabled = sum(1 for policy in all_firewall_policies if not _as_bool(policy.get("loggingEnabled")))
         if logging_disabled:
             risks.append(f"Firewall visibility may be limited - {_plural(logging_disabled, 'captured firewall policy', 'captured firewall policies')} have logging disabled.")
+        broad_allow = _broad_allow_policy_summary(all_firewall_policies)
+        if broad_allow.get("user", 0):
+            risks.append(f"User-defined broad allow policies require review - {_plural(broad_allow['user'], 'enabled user-defined broad allow policy', 'enabled user-defined broad allow policies')} detected by policy name/action.")
     else:
         risks.append("No firewall policies were captured; do not treat this run as a complete security backup until policy endpoint access is validated.")
 
@@ -1085,13 +1147,19 @@ def _security_baseline_rows(
 ) -> List[List[Any]]:
     weak_wifi = _wifi_security_weak(all_wifi)
     logging_enabled = sum(1 for policy in all_firewall_policies if _as_bool(policy.get("loggingEnabled")))
-    broad_allow = _broad_allow_policy_count(all_firewall_policies)
+    broad_allow = _broad_allow_policy_summary(all_firewall_policies)
+    if broad_allow.get("user", 0):
+        broad_allow_status = "Review"
+    elif broad_allow.get("total", 0):
+        broad_allow_status = "Document"
+    else:
+        broad_allow_status = "Not detected"
     return [
         ["Network segmentation", "Review" if network_count <= 2 else "Present", f"{_plural(network_count, 'network/VLAN definition')} captured."],
         ["Wireless authentication", "Review" if weak_wifi else ("Present" if all_wifi else "Missing"), "; ".join(weak_wifi[:2]) if weak_wifi else f"{_plural(len(all_wifi), 'SSID')} captured."],
         ["Firewall rules", "Present" if all_firewall_policies else "Missing", f"{_plural(len(all_firewall_policies), 'policy', 'policies')} captured."],
         ["Firewall logging", "Review" if all_firewall_policies and logging_enabled < len(all_firewall_policies) else "Present", f"{logging_enabled} of {len(all_firewall_policies)} policies have logging enabled."],
-        ["Broad allow policies", "Review" if broad_allow else "Not detected", f"{_plural(broad_allow, 'enabled broad allow policy', 'enabled broad allow policies')} detected by policy name/action."],
+        ["Broad allow policies", broad_allow_status, _broad_allow_policy_interpretation(broad_allow)],
         ["DNS filtering policy", "Missing" if not all_dns_policies else "Present", f"{_plural(len(all_dns_policies), 'DNS policy', 'DNS policies')} captured."],
         ["RADIUS / identity", "Present" if all_radius else "Not captured", f"{_plural(len(all_radius), 'RADIUS profile')} captured."],
     ]
@@ -1603,6 +1671,13 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     if auth_guidance:
         sections.append("<h3>Credential / Access Fix</h3>")
         sections.append("<ul>" + "".join(f"<li>{html.escape(item)}</li>" for item in auth_guidance) + "</ul>")
+    sections.append("<h3>Telemetry Recovery Plan</h3>")
+    sections.append(
+        _table(
+            ["Area", "Status", "Action / Interpretation"],
+            _telemetry_recovery_rows(telemetry_probes, net),
+        )
+    )
     sections.append("</section>")
 
     sections.append("<section><h2>3. Network Overview</h2>")
