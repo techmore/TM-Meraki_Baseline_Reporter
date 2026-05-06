@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from unifi.client import UniFiRequestError
-from unifi.collect import _call_list
+from unifi.collect import _call_list, _collect_telemetry_probes
 from unifi.report import build_report
 from unifi.profiles import discover_site_profiles
 
@@ -34,6 +34,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
                         "wifi": "sites/Main/wifi.json",
                         "firewall_zones": "sites/Main/firewall_zones.json",
                         "firewall_policies": "sites/Main/firewall_policies.json",
+                        "telemetry_probe": "sites/Main/telemetry_probe.json",
                     },
                     "counts": {"devices": 3, "clients": 1, "networks": 1, "wifi": 1, "firewall_zones": 1, "firewall_policies": 1},
                 }
@@ -75,6 +76,15 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     )
     (site_dir / "firewall_zones.json").write_text(json.dumps([{"name": "Internal", "id": "zone-1"}]), encoding="utf-8")
     (site_dir / "firewall_policies.json").write_text(json.dumps([{"name": "Allow Staff", "enabled": True, "action": {"type": "ALLOW"}}]), encoding="utf-8")
+    (site_dir / "telemetry_probe.json").write_text(
+        json.dumps(
+            [
+                {"label": "site_ports", "purpose": "Per-site switch port telemetry", "path": "/ports", "available": False, "status": 404, "itemCount": 0},
+                {"label": "wireless_radios", "purpose": "Wireless radio telemetry", "path": "/wireless/radios", "available": False, "status": 404, "itemCount": 0},
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     output = tmp_path / "report"
     paths = build_report(str(source), str(output))
@@ -100,6 +110,9 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Interface Telemetry Coverage" in html
     assert "ports, radios" in html
     assert "capability flag only" in html
+    assert "API Telemetry Probe Results" in html
+    assert "site_ports" in html
+    assert "HTTP 404" in html
 
 
 def test_unifi_profiles_discovers_numbered_site_profiles(monkeypatch):
@@ -221,3 +234,27 @@ def test_unifi_collect_treats_optional_404_as_unsupported():
     assert errors == []
     assert unsupported[0]["label"] == "Default:vpn_tunnels"
     assert unsupported[0]["note"] == "Not exposed by this controller."
+
+
+def test_unifi_collect_telemetry_probe_records_available_and_missing_paths(tmp_path: Path):
+    class ProbeClient:
+        def get_json(self, path, params=None):
+            if path.endswith("/sites/site-1/ports"):
+                return {"data": [{"port": 1}, {"port": 2}]}
+            raise UniFiRequestError("HTTP 404", status=404)
+
+    results = _collect_telemetry_probes(
+        ProbeClient(),
+        "/network",
+        "site-1",
+        "Main",
+        [{"id": "device-1", "interfaces": ["ports", "radios"]}],
+        tmp_path,
+    )
+    by_label = {result["label"]: result for result in results}
+
+    assert by_label["site_ports"]["available"] is True
+    assert by_label["site_ports"]["itemCount"] == 2
+    assert (tmp_path / by_label["site_ports"]["file"]).exists()
+    assert by_label["site_radios"]["status"] == 404
+    assert by_label["device_ports"]["path"].endswith("/devices/device-1/ports")

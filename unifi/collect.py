@@ -28,6 +28,19 @@ SOURCE_NOTES = [
 OPTIONAL_404_SITE_ENDPOINTS = {
     "vpn_tunnels": "This UniFi Network version does not expose VPN tunnel listing through the Network Integration API.",
 }
+TELEMETRY_PROBES: Tuple[Dict[str, str], ...] = (
+    {"label": "site_ports", "scope": "site", "suffix": "ports", "purpose": "Per-site switch port telemetry"},
+    {"label": "site_radios", "scope": "site", "suffix": "radios", "purpose": "Per-site AP radio telemetry"},
+    {"label": "site_interfaces", "scope": "site", "suffix": "interfaces", "purpose": "Per-site interface telemetry"},
+    {"label": "device_interfaces", "scope": "site", "suffix": "device-interfaces", "purpose": "Per-site device interface telemetry"},
+    {"label": "switch_ports", "scope": "site", "suffix": "switch/ports", "purpose": "Switch port telemetry"},
+    {"label": "wireless_radios", "scope": "site", "suffix": "wireless/radios", "purpose": "Wireless radio telemetry"},
+    {"label": "wifi_radio_settings", "scope": "site", "suffix": "wifi/radio-settings", "purpose": "WiFi radio settings"},
+    {"label": "wifi_rf_environments", "scope": "site", "suffix": "wifi/rf-environments", "purpose": "RF environment telemetry"},
+    {"label": "wifi_channel_plans", "scope": "site", "suffix": "wifi/channel-plans", "purpose": "Channel plan telemetry"},
+    {"label": "device_ports", "scope": "device", "interface": "ports", "suffix": "devices/{device_id}/ports", "purpose": "Per-device port telemetry"},
+    {"label": "device_radios", "scope": "device", "interface": "radios", "suffix": "devices/{device_id}/radios", "purpose": "Per-device radio telemetry"},
+)
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -45,6 +58,11 @@ def _bool_env(name: str, default: bool = True) -> bool:
 def _safe_name(value: str) -> str:
     clean = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in value.strip())
     return clean.strip("_") or "site"
+
+
+def _safe_label(value: str) -> str:
+    clean = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in value.strip())
+    return clean.strip("_") or "item"
 
 
 def _items(payload: Any) -> List[Dict[str, Any]]:
@@ -81,6 +99,31 @@ def _site_matches(site: Dict[str, Any], selector: str) -> bool:
     return wanted in {value.strip().lower() for value in values if value}
 
 
+def _device_with_interface(devices: Iterable[Dict[str, Any]], interface: str) -> Dict[str, Any] | None:
+    wanted = interface.strip().lower()
+    for device in devices:
+        interfaces = device.get("interfaces")
+        if not isinstance(interfaces, list):
+            continue
+        available = {str(item).strip().lower() for item in interfaces if item}
+        if wanted in available and (device.get("id") or device.get("_id")):
+            return device
+    return None
+
+
+def _payload_count(payload: Any) -> int:
+    items = _items(payload)
+    if items:
+        return len(items)
+    if payload in (None, ""):
+        return 0
+    if isinstance(payload, dict):
+        return 1
+    if isinstance(payload, list):
+        return len(payload)
+    return 1
+
+
 def _call_list(
     client: UniFiClient,
     path: str,
@@ -102,6 +145,58 @@ def _call_list(
     except Exception as exc:
         errors.append({"label": label, "path": path, "status": None, "error": str(exc)})
     return []
+
+
+def _probe_telemetry_endpoint(client: UniFiClient, path: str, *, label: str, purpose: str, output: Path, safe: str) -> Dict[str, Any]:
+    record: Dict[str, Any] = {
+        "label": label,
+        "purpose": purpose,
+        "path": path,
+        "available": False,
+        "status": None,
+        "itemCount": 0,
+    }
+    try:
+        payload = client.get_json(path, {"limit": 10, "offset": 0})
+    except UniFiRequestError as exc:
+        record.update({"status": exc.status, "error": str(exc)})
+        return record
+    except Exception as exc:
+        record.update({"error": str(exc)})
+        return record
+
+    rel = f"sites/{safe}/telemetry/{_safe_label(label)}.json"
+    _write_json(output / rel, payload)
+    record.update({"available": True, "status": 200, "itemCount": _payload_count(payload), "file": rel})
+    return record
+
+
+def _collect_telemetry_probes(client: UniFiClient, network_prefix: str, site_id: str, safe: str, devices: Iterable[Dict[str, Any]], output: Path) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    device_items = list(devices)
+    for probe in TELEMETRY_PROBES:
+        label = probe["label"]
+        suffix = probe["suffix"]
+        if probe.get("scope") == "device":
+            device = _device_with_interface(device_items, probe.get("interface", ""))
+            if not device:
+                results.append(
+                    {
+                        "label": label,
+                        "purpose": probe.get("purpose", ""),
+                        "path": "",
+                        "available": False,
+                        "status": None,
+                        "itemCount": 0,
+                        "note": f"No sampled device advertises {probe.get('interface')} interface capability.",
+                    }
+                )
+                continue
+            device_id = str(device.get("id") or device.get("_id"))
+            suffix = suffix.format(device_id=device_id)
+        path = f"{network_prefix}/sites/{site_id}/{suffix}"
+        results.append(_probe_telemetry_endpoint(client, path, label=label, purpose=probe.get("purpose", ""), output=output, safe=safe))
+    return results
 
 
 def collect_site_manager(output: Path) -> Dict[str, Any]:
@@ -238,6 +333,7 @@ def collect_network_application(output: Path, selected_site_id: str = "", consol
         name = _site_name(site)
         safe = _safe_name(name or sid)
         site_summary: Dict[str, Any] = {"id": sid, "name": name, "files": {}, "counts": {}}
+        site_payloads: Dict[str, List[Any]] = {}
         for label, suffix in site_endpoints:
             path = f"{network_prefix}/sites/{sid}/{suffix}"
             data = _call_list(
@@ -253,6 +349,13 @@ def collect_network_application(output: Path, selected_site_id: str = "", consol
             _write_json(output / rel, data)
             site_summary["files"][label] = rel
             site_summary["counts"][label] = len(data)
+            site_payloads[label] = data
+        telemetry_probe = _collect_telemetry_probes(client, network_prefix, sid, safe, _items(site_payloads.get("devices", [])), output)
+        telemetry_rel = f"sites/{safe}/telemetry_probe.json"
+        _write_json(output / telemetry_rel, telemetry_probe)
+        site_summary["files"]["telemetry_probe"] = telemetry_rel
+        site_summary["counts"]["telemetry_probe_available"] = sum(1 for result in telemetry_probe if result.get("available"))
+        site_summary["counts"]["telemetry_probe_total"] = len(telemetry_probe)
         site_summaries.append(site_summary)
 
     _write_json(output / "network_site_summaries.json", site_summaries)

@@ -67,6 +67,8 @@ available on a given controller.
 Outputs are written to:
 
 - `unifi/backups/latest/` for raw JSON backups
+- `unifi/backups/latest/sites/<site>/telemetry_probe.json` for non-fatal
+  port/radio endpoint coverage probes
 - `unifi/reports/latest/` for `report.pdf`, optional `report.html`,
   `report_inventory.json`, and `index.html`
 

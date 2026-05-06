@@ -141,6 +141,45 @@ def _interface_device_rows(devices: Iterable[Dict[str, Any]]) -> List[List[Any]]
     return rows
 
 
+def _probe_status_label(probe: Dict[str, Any]) -> str:
+    if probe.get("available"):
+        return "available"
+    status = probe.get("status")
+    if status:
+        return f"HTTP {status}"
+    return "not probed"
+
+
+def _probe_status_summary(probes: Iterable[Dict[str, Any]], terms: Iterable[str], fallback: str) -> str:
+    wanted = [term.lower() for term in terms]
+    relevant = [
+        probe
+        for probe in probes
+        if any(term in str(probe.get("label") or "").lower() or term in str(probe.get("purpose") or "").lower() for term in wanted)
+    ]
+    if not relevant:
+        return fallback
+    if any(probe.get("available") for probe in relevant):
+        return "captured by API probe"
+    statuses = sorted({_probe_status_label(probe) for probe in relevant})
+    return f"not exposed by probed endpoints ({', '.join(statuses)})"
+
+
+def _probe_rows(probes: Iterable[Dict[str, Any]]) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+    for probe in probes:
+        rows.append(
+            [
+                probe.get("label", ""),
+                _probe_status_label(probe),
+                _yes_no(probe.get("available")),
+                probe.get("itemCount", 0),
+                probe.get("purpose") or probe.get("note") or "",
+            ]
+        )
+    return rows
+
+
 def _table(headers: List[str], rows: List[List[Any]], empty: str = "No data captured.") -> str:
     if not rows:
         return f"<p class='muted'>{html.escape(empty)}</p>"
@@ -327,9 +366,11 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
 
     all_devices: List[Dict[str, Any]] = []
     all_clients: List[Dict[str, Any]] = []
+    telemetry_probes: List[Dict[str, Any]] = []
     for site in site_summaries:
         all_devices.extend(_read_site_file(source, site, "devices"))
         all_clients.extend(_read_site_file(source, site, "clients"))
+        telemetry_probes.extend(_read_site_file(source, site, "telemetry_probe"))
     if not all_devices:
         all_devices = sm_devices
 
@@ -440,10 +481,21 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append("<h3>By Model</h3>")
     sections.append(_table(["Model", "Role", "Count"], _model_rows(all_devices), "No device model data captured."))
     sections.append("<h3>Interface Telemetry Coverage</h3>")
-    sections.append("<p class='muted'>UniFi Network reports interface capability flags in this backup. Per-port and per-radio utilization metrics are not present in the captured Network Integration payloads.</p>")
+    if telemetry_probes:
+        sections.append("<p class='muted'>UniFi Network reports interface capability flags in this backup. API probe results below document whether detailed per-port and per-radio endpoints were exposed by this controller.</p>")
+    else:
+        sections.append("<p class='muted'>UniFi Network reports interface capability flags in this backup. Per-port and per-radio utilization metrics are not present in the captured Network Integration payloads.</p>")
     sections.append("<div class='two-col'><div><h4>Advertised Interfaces</h4>" + _table(["Interface", "Devices"], _interface_summary_rows(all_devices), "No interface capability flags captured.") + "</div>")
-    sections.append("<div><h4>Telemetry Status</h4>" + _table(["Metric", "Status"], [["Port detail", "not present in backup"], ["Radio detail", "not present in backup"], ["Client uplink mapping", "captured"]]) + "</div></div>")
+    telemetry_status_rows = [
+        ["Port detail", _probe_status_summary(telemetry_probes, ("port", "ports"), "not present in backup")],
+        ["Radio detail", _probe_status_summary(telemetry_probes, ("radio", "radios", "rf"), "not present in backup")],
+        ["Client uplink mapping", "captured" if all_clients else "not present in backup"],
+    ]
+    sections.append("<div><h4>Telemetry Status</h4>" + _table(["Metric", "Status"], telemetry_status_rows) + "</div></div>")
     sections.append(_table(["Device", "Model", "Features", "Interfaces", "Detail"], _interface_device_rows(all_devices), "No device interface coverage captured."))
+    if telemetry_probes:
+        sections.append("<h4>API Telemetry Probe Results</h4>")
+        sections.append(_table(["Probe", "Status", "Available", "Items", "Purpose"], _probe_rows(telemetry_probes), "No telemetry probes captured."))
     device_rows = []
     for dev in all_devices[:300]:
         device_rows.append([
