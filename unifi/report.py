@@ -507,6 +507,139 @@ def _broad_allow_policy_count(policies: Iterable[Dict[str, Any]]) -> int:
     return count
 
 
+def _item_origin_label(item: Dict[str, Any]) -> str:
+    metadata_payload = item.get("metadata")
+    if isinstance(metadata_payload, dict):
+        return str(metadata_payload.get("origin") or "")
+    return _first(item, ("origin", "source"))
+
+
+def _compact_value(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(_compact_value(item) for item in value if item not in (None, ""))
+    if isinstance(value, dict):
+        return ", ".join(
+            str(value.get(key))
+            for key in ("name", "value", "id", "type")
+            if value.get(key) not in (None, "")
+        )
+    return str(value) if value not in (None, "") else ""
+
+
+def _service_endpoint_state(items: List[Dict[str, Any]]) -> str:
+    if items:
+        return f"{_plural(len(items), 'record')} captured"
+    return "captured empty"
+
+
+def _wan_rows(wans: List[Dict[str, Any]]) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+    for wan in wans[:100]:
+        ip_gateway = " / ".join(
+            value
+            for value in (
+                _first(wan, ("ipAddress", "ip", "address")),
+                _first(wan, ("gateway", "gatewayIp", "gatewayAddress")),
+            )
+            if value
+        )
+        rows.append(
+            [
+                _first(wan, ("name", "displayName", "id")),
+                _first(wan, ("enabled", "state", "status"), "captured"),
+                _first(wan, ("type", "wanType", "purpose")),
+                _first(wan, ("addressingType", "connectionType", "ipv4ConnectionType", "mode")),
+                ip_gateway,
+                _compact_value(wan.get("dnsServers") or wan.get("dns") or wan.get("nameservers")),
+                _first(wan, ("id", "_id")),
+            ]
+        )
+    return rows
+
+
+def _vpn_rows(items: List[Dict[str, Any]]) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+    for item in items[:100]:
+        remote = _compact_value(item.get("remote") or item.get("peer") or item.get("peers") or item.get("remoteAddress") or item.get("remoteNetwork"))
+        rows.append(
+            [
+                _first(item, ("name", "displayName", "id")),
+                _first(item, ("enabled", "state", "status"), "captured"),
+                _first(item, ("type", "vpnType", "protocol")),
+                remote,
+                _compact_value(item.get("network") or item.get("networks") or item.get("routes")),
+                _item_origin_label(item),
+                _first(item, ("id", "_id")),
+            ]
+        )
+    return rows
+
+
+def _radius_rows(items: List[Dict[str, Any]]) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+    for item in items[:100]:
+        rows.append(
+            [
+                _first(item, ("name", "displayName", "id")),
+                _first(item, ("enabled", "state", "status"), "captured"),
+                _first(item, ("host", "server", "serverAddress", "ipAddress")),
+                _first(item, ("authPort", "authenticationPort", "port")),
+                _first(item, ("accountingPort", "acctPort")),
+                _item_origin_label(item),
+                _first(item, ("id", "_id")),
+            ]
+        )
+    return rows
+
+
+def _hotspot_rows(items: List[Dict[str, Any]]) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+    for item in items[:100]:
+        rows.append(
+            [
+                _first(item, ("name", "code", "id")),
+                _first(item, ("enabled", "state", "status"), "captured"),
+                _first(item, ("uses", "used", "usageCount")),
+                _first(item, ("duration", "durationMinutes", "validity")),
+                _first(item, ("expiresAt", "expiration", "validUntil")),
+                _item_origin_label(item),
+                _first(item, ("id", "_id")),
+            ]
+        )
+    return rows
+
+
+def _dns_policy_rows(items: List[Dict[str, Any]]) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+    for item in items[:100]:
+        rows.append(
+            [
+                _first(item, ("name", "displayName", "id")),
+                _first(item, ("enabled", "state", "status"), "captured"),
+                _first(item, ("action", "type", "policyType", "mode")),
+                _compact_value(item.get("network") or item.get("networks") or item.get("networkIds")),
+                _compact_value(item.get("categories") or item.get("domains") or item.get("rules")),
+                _item_origin_label(item),
+                _first(item, ("id", "_id")),
+            ]
+        )
+    return rows
+
+
+def _network_service_summary_rows(site: Dict[str, Any], source: Path) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+    for key, label in (
+        ("wans", "WAN interfaces"),
+        ("vpn_servers", "VPN servers"),
+        ("vpn_tunnels", "VPN tunnels"),
+        ("radius", "RADIUS profiles"),
+        ("hotspot_vouchers", "Hotspot vouchers"),
+        ("dns_policies", "DNS policies"),
+    ):
+        rows.append([label, _service_endpoint_state(_read_site_file(source, site, key))])
+    return rows
+
+
 def _wifi_network_label(wlan: Dict[str, Any]) -> str:
     network = wlan.get("network")
     if isinstance(network, dict):
@@ -1500,7 +1633,29 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             sections.append(_table(headers, rows, f"No {label.lower()} endpoint data captured."))
     sections.append("</section>")
 
-    sections.append("<section><h2>12. Raw Backup Files</h2>")
+    sections.append("<section><h2>12. Network Services Backup</h2>")
+    sections.append("<p>This section renders service-oriented configuration that is already saved in the raw UniFi JSON backup. Empty tables are still useful because they document that the endpoint was captured and currently returned no configured records.</p>")
+    for site in site_summaries:
+        sections.append(f"<h3>{html.escape(str(site.get('name') or 'Site'))}</h3>")
+        sections.append("<h4>Service Endpoint Summary</h4>")
+        sections.append(_table(["Area", "Capture State"], _network_service_summary_rows(site, source)))
+        sections.append("<h4>WAN Interfaces</h4>")
+        sections.append(_table(["Name", "State", "Type", "Addressing", "IP / Gateway", "DNS", "ID"], _wan_rows(_read_site_file(source, site, "wans")), "No WAN endpoint data captured."))
+        sections.append("<h4>VPN Servers</h4>")
+        sections.append(_table(["Name", "State", "Type", "Remote / Peer", "Network / Routes", "Origin", "ID"], _vpn_rows(_read_site_file(source, site, "vpn_servers")), "No VPN server records captured."))
+        sections.append("<h4>VPN Tunnels</h4>")
+        sections.append(_table(["Name", "State", "Type", "Remote / Peer", "Network / Routes", "Origin", "ID"], _vpn_rows(_read_site_file(source, site, "vpn_tunnels")), "No VPN tunnel records captured."))
+        sections.append("<h4>RADIUS Profiles</h4>")
+        sections.append(_table(["Name", "State", "Server", "Auth Port", "Accounting Port", "Origin", "ID"], _radius_rows(_read_site_file(source, site, "radius")), "No RADIUS profile records captured."))
+        sections.append("<h4>Hotspot Vouchers</h4>")
+        sections.append(_table(["Name / Code", "State", "Uses", "Duration", "Expires", "Origin", "ID"], _hotspot_rows(_read_site_file(source, site, "hotspot_vouchers")), "No hotspot voucher records captured."))
+        sections.append("<h4>DNS Policies</h4>")
+        sections.append(_table(["Name", "State", "Action / Type", "Networks", "Rules / Categories", "Origin", "ID"], _dns_policy_rows(_read_site_file(source, site, "dns_policies")), "No DNS policy records captured."))
+    if not site_summaries:
+        sections.append("<p class='muted'>No local Network Application service backup detail captured.</p>")
+    sections.append("</section>")
+
+    sections.append("<section><h2>13. Raw Backup Files</h2>")
     files = sorted(str(p.relative_to(source)) for p in source.rglob("*.json"))
     sections.append(_table(["JSON backup"], [[f] for f in files], "No JSON backup files found."))
     sections.append("</section>")
@@ -1515,7 +1670,8 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             "6. Sites, Networks, VLANs, and DHCP",
             "8. Security Baseline",
             "11. Firewall and Policy Backup",
-            "12. Raw Backup Files",
+            "12. Network Services Backup",
+            "13. Raw Backup Files",
         ),
     )
 
@@ -1589,7 +1745,8 @@ def _html_shell(
         ("9", "Recommendations & Implementation Plan"),
         ("10", "Hardware Refresh & Budget Planning"),
         ("11", "Firewall and Policy Backup"),
-        ("12", "Raw Backup Files"),
+        ("12", "Network Services Backup"),
+        ("13", "Raw Backup Files"),
     ]
     toc_html = "".join(
         f'<li><span class="toc-num">{html.escape(str(number))}</span><span>{html.escape(str(label))}</span></li>'

@@ -42,6 +42,10 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
                         "firewall_zones": "sites/Main/firewall_zones.json",
                         "firewall_policies": "sites/Main/firewall_policies.json",
                         "dns_policies": "sites/Main/dns_policies.json",
+                        "wans": "sites/Main/wans.json",
+                        "vpn_servers": "sites/Main/vpn_servers.json",
+                        "radius": "sites/Main/radius.json",
+                        "hotspot_vouchers": "sites/Main/hotspot_vouchers.json",
                         "vpn_tunnels": "sites/Main/vpn_tunnels.json",
                         "telemetry_probe": "sites/Main/telemetry_probe.json",
                     },
@@ -53,6 +57,10 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
                         "firewall_zones": 1,
                         "firewall_policies": 1,
                         "dns_policies": 0,
+                        "wans": 1,
+                        "vpn_servers": 1,
+                        "radius": 1,
+                        "hotspot_vouchers": 1,
                         "vpn_tunnels": 0,
                         "telemetry_probe_available": 0,
                         "telemetry_probe_total": 2,
@@ -123,6 +131,10 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
         encoding="utf-8",
     )
     (site_dir / "dns_policies.json").write_text(json.dumps([]), encoding="utf-8")
+    (site_dir / "wans.json").write_text(json.dumps([{"name": "Internet 1", "id": "wan-1", "addressingType": "DHCP", "dnsServers": ["1.1.1.1"]}]), encoding="utf-8")
+    (site_dir / "vpn_servers.json").write_text(json.dumps([{"name": "Corp VPN", "enabled": True, "type": "wireguard", "metadata": {"origin": "USER_DEFINED"}}]), encoding="utf-8")
+    (site_dir / "radius.json").write_text(json.dumps([{"name": "Default RADIUS", "host": "10.10.0.5", "authPort": 1812, "metadata": {"origin": "USER_DEFINED"}}]), encoding="utf-8")
+    (site_dir / "hotspot_vouchers.json").write_text(json.dumps([{"code": "guest-123", "status": "active", "durationMinutes": 60}]), encoding="utf-8")
     (site_dir / "vpn_tunnels.json").write_text(json.dumps([]), encoding="utf-8")
     (site_dir / "telemetry_probe.json").write_text(
         json.dumps(
@@ -174,6 +186,11 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "IP: 224.0.0.0/24" in html
     assert "IPv4 and IPv6; UDP" in html
     assert "Broad allow policies" in html
+    assert "Network Services Backup" in html
+    assert "Internet 1" in html
+    assert "Corp VPN" in html
+    assert "Default RADIUS" in html
+    assert "guest-123" in html
     assert "U7-Pro-1 (U7-Pro)" in html
     assert "Firmware" in html
     assert "Network Application version" in html
@@ -197,6 +214,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "UniFi Backup Settings Report" in backup_html
     assert "Configuration Backup Completeness" in backup_html
     assert "Firewall and Policy Backup" in backup_html
+    assert "Network Services Backup" in backup_html
     assert "Hardware Refresh &amp; Budget Planning" not in backup_html
     assert "Connected Clients" not in backup_html
 
