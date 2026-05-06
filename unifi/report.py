@@ -410,6 +410,103 @@ def _zone_label(value: Any, zone_names: Dict[str, str]) -> str:
     return str(value or "")
 
 
+def _filter_values(filter_payload: Any) -> str:
+    if not isinstance(filter_payload, dict):
+        return ""
+    values: List[str] = []
+    for item in filter_payload.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("value") or item.get("name") or item.get("id") or "")
+        item_type = str(item.get("type") or "")
+        if label and item_type and item_type not in {"IP_ADDRESS", "SUBNET", "PORT_NUMBER", "PORT_RANGE"}:
+            item_type = item_type.replace("_", " ").title()
+            values.append(f"{item_type} {label}")
+        elif label:
+            values.append(label)
+    if not values:
+        values.append(str(filter_payload.get("type") or ""))
+    values = [value for value in values if value]
+    if not values:
+        return ""
+    prefix = "not " if filter_payload.get("matchOpposite") else ""
+    return prefix + ", ".join(values)
+
+
+def _traffic_filter_label(value: Any, zone_names: Dict[str, str]) -> str:
+    if not isinstance(value, dict):
+        return str(value or "")
+    parts: List[str] = []
+    zone_id = str(value.get("zoneId") or "")
+    if zone_id:
+        parts.append(zone_names.get(zone_id, zone_id))
+    traffic = value.get("trafficFilter")
+    if isinstance(traffic, dict):
+        details = []
+        ip_detail = _filter_values(traffic.get("ipAddressFilter"))
+        port_detail = _filter_values(traffic.get("portFilter"))
+        if ip_detail:
+            details.append(f"IP: {ip_detail}")
+        if port_detail:
+            details.append(f"Port: {port_detail}")
+        traffic_type = str(traffic.get("type") or "")
+        if traffic_type and not details:
+            details.append(traffic_type.replace("_", " ").title())
+        if details:
+            parts.append("; ".join(details))
+    return " | ".join(part for part in parts if part) or _zone_label(value, zone_names)
+
+
+def _ip_protocol_label(policy: Dict[str, Any]) -> str:
+    scope = policy.get("ipProtocolScope")
+    if not isinstance(scope, dict):
+        return ""
+    parts = []
+    ip_version = str(scope.get("ipVersion") or "")
+    if ip_version:
+        version_labels = {
+            "IPV4": "IPv4",
+            "IPV6": "IPv6",
+            "IPV4_AND_IPV6": "IPv4 and IPv6",
+        }
+        parts.append(version_labels.get(ip_version.upper(), ip_version.replace("_", " ")))
+    protocol_filter = scope.get("protocolFilter")
+    if isinstance(protocol_filter, dict):
+        protocol = protocol_filter.get("protocol")
+        if isinstance(protocol, dict):
+            label = str(protocol.get("name") or protocol.get("protocol") or "")
+        else:
+            label = str(protocol or "")
+        if label:
+            if protocol_filter.get("matchOpposite"):
+                label = f"not {label}"
+            parts.append(label)
+    return "; ".join(parts)
+
+
+def _connection_state_label(policy: Dict[str, Any]) -> str:
+    states = policy.get("connectionStateFilter")
+    if isinstance(states, list):
+        return ", ".join(str(state) for state in states if state)
+    return str(states or "")
+
+
+def _policy_origin_label(policy: Dict[str, Any]) -> str:
+    metadata_payload = policy.get("metadata")
+    if isinstance(metadata_payload, dict):
+        return str(metadata_payload.get("origin") or "")
+    return ""
+
+
+def _broad_allow_policy_count(policies: Iterable[Dict[str, Any]]) -> int:
+    count = 0
+    for policy in policies:
+        name = _first(policy, ("name", "description", "id")).strip().lower()
+        if _as_bool(policy.get("enabled")) and _action_label(policy).upper().startswith("ALLOW") and "allow all" in name:
+            count += 1
+    return count
+
+
 def _wifi_network_label(wlan: Dict[str, Any]) -> str:
     network = wlan.get("network")
     if isinstance(network, dict):
@@ -667,11 +764,13 @@ def _security_baseline_rows(
 ) -> List[List[Any]]:
     weak_wifi = _wifi_security_weak(all_wifi)
     logging_enabled = sum(1 for policy in all_firewall_policies if _as_bool(policy.get("loggingEnabled")))
+    broad_allow = _broad_allow_policy_count(all_firewall_policies)
     return [
         ["Network segmentation", "Review" if network_count <= 2 else "Present", f"{_plural(network_count, 'network/VLAN definition')} captured."],
         ["Wireless authentication", "Review" if weak_wifi else ("Present" if all_wifi else "Missing"), "; ".join(weak_wifi[:2]) if weak_wifi else f"{_plural(len(all_wifi), 'SSID')} captured."],
         ["Firewall rules", "Present" if all_firewall_policies else "Missing", f"{_plural(len(all_firewall_policies), 'policy', 'policies')} captured."],
         ["Firewall logging", "Review" if all_firewall_policies and logging_enabled < len(all_firewall_policies) else "Present", f"{logging_enabled} of {len(all_firewall_policies)} policies have logging enabled."],
+        ["Broad allow policies", "Review" if broad_allow else "Not detected", f"{_plural(broad_allow, 'enabled broad allow policy', 'enabled broad allow policies')} detected by policy name/action."],
         ["DNS filtering policy", "Missing" if not all_dns_policies else "Present", f"{_plural(len(all_dns_policies), 'DNS policy', 'DNS policies')} captured."],
         ["RADIUS / identity", "Present" if all_radius else "Not captured", f"{_plural(len(all_radius), 'RADIUS profile')} captured."],
     ]
@@ -1384,13 +1483,16 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
                         _first(item, ("name", "description", "id")),
                         _first(item, ("enabled",)),
                         _action_label(item),
-                        _zone_label(item.get("source"), zone_names),
-                        _zone_label(item.get("destination"), zone_names),
+                        _traffic_filter_label(item.get("source"), zone_names),
+                        _traffic_filter_label(item.get("destination"), zone_names),
+                        _ip_protocol_label(item),
+                        _connection_state_label(item),
                         _first(item, ("loggingEnabled",)),
+                        _policy_origin_label(item),
                     ]
                     for item in data[:120]
                 ]
-                headers = ["Order", "Name", "Enabled", "Action", "Source", "Destination", "Logging"]
+                headers = ["Order", "Name", "Enabled", "Action", "Source", "Destination", "Protocol", "State", "Logging", "Origin"]
             else:
                 rows = [[_first(item, ("name", "description", "id")), _first(item, ("enabled", "action", "type")), _first(item, ("id", "_id"))] for item in data[:100]]
                 headers = ["Name", "State / Action", "ID"]

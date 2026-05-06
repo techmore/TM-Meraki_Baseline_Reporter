@@ -95,7 +95,33 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
         encoding="utf-8",
     )
     (site_dir / "firewall_zones.json").write_text(json.dumps([{"name": "Internal", "id": "zone-1"}]), encoding="utf-8")
-    (site_dir / "firewall_policies.json").write_text(json.dumps([{"name": "Allow Staff", "enabled": True, "action": {"type": "ALLOW"}}]), encoding="utf-8")
+    (site_dir / "firewall_policies.json").write_text(
+        json.dumps(
+            [
+                {"name": "Allow Staff", "enabled": True, "action": {"type": "ALLOW"}},
+                {
+                    "name": "Allow mDNS",
+                    "enabled": True,
+                    "action": {"type": "ALLOW", "allowReturnTraffic": True},
+                    "source": {"zoneId": "zone-1", "trafficFilter": {"portFilter": {"items": [{"type": "PORT_NUMBER", "value": 5353}], "type": "PORTS"}}},
+                    "destination": {"trafficFilter": {"ipAddressFilter": {"items": [{"type": "SUBNET", "value": "224.0.0.0/24"}], "type": "IP_ADDRESSES"}}},
+                    "ipProtocolScope": {"ipVersion": "IPV4_AND_IPV6", "protocolFilter": {"protocol": {"name": "UDP"}, "type": "NAMED_PROTOCOL"}},
+                    "loggingEnabled": False,
+                    "metadata": {"origin": "USER_DEFINED"},
+                },
+                {
+                    "name": "Allow All Traffic",
+                    "enabled": True,
+                    "action": {"type": "ALLOW", "allowReturnTraffic": True},
+                    "source": {"zoneId": "zone-1"},
+                    "destination": {"zoneId": "zone-1"},
+                    "loggingEnabled": False,
+                    "metadata": {"origin": "SYSTEM_DEFINED"},
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
     (site_dir / "dns_policies.json").write_text(json.dumps([]), encoding="utf-8")
     (site_dir / "vpn_tunnels.json").write_text(json.dumps([]), encoding="utf-8")
     (site_dir / "telemetry_probe.json").write_text(
@@ -144,6 +170,10 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Client Load by Uplink" in html
     assert "Firewall Policy Summary" in html
     assert "Internal" in html
+    assert "Port: 5353" in html
+    assert "IP: 224.0.0.0/24" in html
+    assert "IPv4 and IPv6; UDP" in html
+    assert "Broad allow policies" in html
     assert "U7-Pro-1 (U7-Pro)" in html
     assert "Firmware" in html
     assert "Network Application version" in html
