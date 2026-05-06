@@ -25,6 +25,9 @@ SOURCE_NOTES = [
         "note": "Cloud API for high-level host, site, device, ISP, and SD-WAN visibility.",
     },
 ]
+OPTIONAL_404_SITE_ENDPOINTS = {
+    "vpn_tunnels": "This UniFi Network version does not expose VPN tunnel listing through the Network Integration API.",
+}
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -78,11 +81,24 @@ def _site_matches(site: Dict[str, Any], selector: str) -> bool:
     return wanted in {value.strip().lower() for value in values if value}
 
 
-def _call_list(client: UniFiClient, path: str, *, style: str, label: str, errors: List[Dict[str, Any]]) -> List[Any]:
+def _call_list(
+    client: UniFiClient,
+    path: str,
+    *,
+    style: str,
+    label: str,
+    errors: List[Dict[str, Any]],
+    unsupported: List[Dict[str, Any]] | None = None,
+    optional_404_note: str = "",
+) -> List[Any]:
     try:
         return client.paged_get(path, style=style)
     except UniFiRequestError as exc:
-        errors.append({"label": label, "path": path, "status": exc.status, "error": str(exc)})
+        record = {"label": label, "path": path, "status": exc.status, "error": str(exc)}
+        if exc.status == 404 and unsupported is not None and optional_404_note:
+            unsupported.append({**record, "note": optional_404_note})
+        else:
+            errors.append(record)
     except Exception as exc:
         errors.append({"label": label, "path": path, "status": None, "error": str(exc)})
     return []
@@ -169,6 +185,7 @@ def collect_network_application(output: Path, selected_site_id: str = "", consol
         verify_ssl=verify_ssl,
     )
     errors: List[Dict[str, Any]] = []
+    unsupported: List[Dict[str, Any]] = []
     summary: Dict[str, Any] = {
         "enabled": True,
         "baseUrl": client.base_url,
@@ -178,6 +195,7 @@ def collect_network_application(output: Path, selected_site_id: str = "", consol
         "files": {},
         "counts": {},
         "errors": errors,
+        "unsupportedEndpoints": unsupported,
     }
 
     try:
@@ -222,7 +240,15 @@ def collect_network_application(output: Path, selected_site_id: str = "", consol
         site_summary: Dict[str, Any] = {"id": sid, "name": name, "files": {}, "counts": {}}
         for label, suffix in site_endpoints:
             path = f"{network_prefix}/sites/{sid}/{suffix}"
-            data = _call_list(client, path, style="offset", label=f"{name}:{label}", errors=errors)
+            data = _call_list(
+                client,
+                path,
+                style="offset",
+                label=f"{name}:{label}",
+                errors=errors,
+                unsupported=unsupported,
+                optional_404_note=OPTIONAL_404_SITE_ENDPOINTS.get(label, ""),
+            )
             rel = f"sites/{safe}/{label}.json"
             _write_json(output / rel, data)
             site_summary["files"][label] = rel

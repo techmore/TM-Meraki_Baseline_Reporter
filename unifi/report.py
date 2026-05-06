@@ -205,9 +205,14 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     ]
     sections.append(_table(["Item", "Value"], rows))
     errors = list(sm.get("errors") or []) + list(net.get("errors") or [])
+    unsupported = list(sm.get("unsupportedEndpoints") or []) + list(net.get("unsupportedEndpoints") or [])
     error_rows = [[e.get("label", ""), e.get("status", ""), e.get("path", ""), e.get("error", "")[:180]] for e in errors]
     sections.append("<h3>Endpoint Gaps / Errors</h3>")
     sections.append(_table(["Endpoint", "Status", "Path", "Error"], error_rows, "No endpoint errors captured."))
+    unsupported_rows = [[e.get("label", ""), e.get("status", ""), e.get("path", ""), e.get("note", "")] for e in unsupported]
+    if unsupported_rows:
+        sections.append("<h3>Optional API Coverage Notes</h3>")
+        sections.append(_table(["Endpoint", "Status", "Path", "Note"], unsupported_rows))
     auth_guidance = _auth_guidance(sm, net)
     if auth_guidance:
         sections.append("<h3>Credential / Access Fix</h3>")

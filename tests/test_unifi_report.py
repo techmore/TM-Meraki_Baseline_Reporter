@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from unifi.client import UniFiRequestError
+from unifi.collect import _call_list
 from unifi.report import build_report
 from unifi.profiles import discover_site_profiles
 
@@ -141,3 +143,59 @@ def test_unifi_report_surfaces_local_connectivity_guidance(tmp_path: Path):
     assert "Credential / Access Fix" in html
     assert "Local UniFi console could not be reached" in html
     assert "UNIFI_NETWORK_BASE_URL" in html
+
+
+def test_unifi_report_lists_optional_unsupported_endpoints(tmp_path: Path):
+    source = tmp_path / "backup"
+    source.mkdir()
+    (source / "collection_summary.json").write_text(
+        json.dumps(
+            {
+                "metadata": {"requestedMode": "network", "effectiveMode": "network"},
+                "networkApplication": {
+                    "enabled": True,
+                    "errors": [],
+                    "unsupportedEndpoints": [
+                        {
+                            "label": "Default:vpn_tunnels",
+                            "status": 404,
+                            "path": "/vpn/tunnels",
+                            "note": "This UniFi Network version does not expose VPN tunnel listing.",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "report"
+    paths = build_report(str(source), str(output))
+    html = Path(paths["html"]).read_text(encoding="utf-8")
+
+    assert "Optional API Coverage Notes" in html
+    assert "Default:vpn_tunnels" in html
+    assert "does not expose VPN tunnel listing" in html
+
+
+def test_unifi_collect_treats_optional_404_as_unsupported():
+    class MissingEndpointClient:
+        def paged_get(self, path, *, style):
+            raise UniFiRequestError("HTTP 404", status=404)
+
+    errors = []
+    unsupported = []
+
+    result = _call_list(
+        MissingEndpointClient(),
+        "/vpn/tunnels",
+        style="offset",
+        label="Default:vpn_tunnels",
+        errors=errors,
+        unsupported=unsupported,
+        optional_404_note="Not exposed by this controller.",
+    )
+
+    assert result == []
+    assert errors == []
+    assert unsupported[0]["label"] == "Default:vpn_tunnels"
+    assert unsupported[0]["note"] == "Not exposed by this controller."
