@@ -131,6 +131,11 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "How to Use This Report" in html
     assert "Security Baseline" in html
     assert "Port and radio diagnostics are low-confidence" in html
+    assert "Client Analysis" in html
+    assert "Client Overview Summary" in html
+    assert "Client Concentration by Uplink" in html
+    assert "Recommendations &amp; Implementation Plan" in html
+    assert "Choose a deeper diagnostics source" in html
     assert "By Model" in html
     assert "Client Load by Uplink" in html
     assert "Firewall Policy Summary" in html
@@ -152,6 +157,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "not exposed (HTTP 404)" in html
     assert "UniFi Executive Summary" in exec_html
     assert "Top Operational Risks" in exec_html
+    assert "Recommendations &amp; Implementation Plan" in exec_html
     assert "Firewall and Policy Backup" not in exec_html
     assert "UniFi Backup Settings Report" in backup_html
     assert "Configuration Backup Completeness" in backup_html

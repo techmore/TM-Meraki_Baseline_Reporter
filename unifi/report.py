@@ -353,7 +353,7 @@ def _section_title(block: str) -> str:
     match = re.search(r"<h2>(.*?)</h2>", block, re.DOTALL)
     if not match:
         return ""
-    return re.sub(r"<[^>]+>", "", match.group(1)).strip()
+    return html.unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
 
 
 def _select_sections(body: str, wanted_prefixes: Iterable[str]) -> str:
@@ -668,6 +668,73 @@ def _security_baseline_rows(
         ["DNS filtering policy", "Missing" if not all_dns_policies else "Present", f"{_plural(len(all_dns_policies), 'DNS policy', 'DNS policies')} captured."],
         ["RADIUS / identity", "Present" if all_radius else "Not captured", f"{_plural(len(all_radius), 'RADIUS profile')} captured."],
     ]
+
+
+def _client_overview_rows(all_clients: List[Dict[str, Any]], now: datetime) -> List[List[Any]]:
+    type_counts = _count_by(all_clients, lambda client: _first(client, ("type", "connectionType"), "Unknown"))
+    access_counts = _count_by(all_clients, _access_label)
+    age_counts = _client_age_buckets(all_clients, now)
+    unknown_uplinks = sum(1 for client in all_clients if not _first(client, ("uplinkDeviceId", "uplinkDeviceMac", "uplinkDeviceName")))
+    return [
+        ["Connection mix", _fmt_counts(type_counts), "Use this for AP/switch migration sizing and wired-versus-wireless planning."],
+        ["Access policy mix", _fmt_counts(access_counts), "Confirm whether DEFAULT access for every client is intended or whether guest/IoT/staff policies should be separated."],
+        ["Client recency", _fmt_counts(age_counts), "Treat 31+ day clients as possible stale inventory before quoting replacements or capacity needs."],
+        ["Uplink mapping gaps", str(unknown_uplinks), "Clients without uplink mapping reduce confidence in AP/switch load conclusions."],
+    ]
+
+
+def _client_uplink_analysis_rows(all_clients: List[Dict[str, Any]], device_names: Dict[str, str]) -> List[List[Any]]:
+    total = len(all_clients)
+    counts = _count_by(all_clients, lambda client: _client_uplink_label(client, device_names) or "Unknown")
+    rows: List[List[Any]] = []
+    for uplink, count in counts.items():
+        share = _pct(count, total)
+        try:
+            pct_value = int(share.rstrip("%"))
+        except ValueError:
+            pct_value = 0
+        if pct_value >= 50:
+            note = "High concentration; validate coverage, capacity, and whether this AP/switch is a single point of client dependency."
+        elif pct_value >= 25:
+            note = "Moderate concentration; review during refresh or placement planning."
+        else:
+            note = "Normal concentration from captured client sample."
+        rows.append([uplink, count, share, note])
+    return rows
+
+
+def _implementation_plan_rows(
+    *,
+    all_devices: List[Dict[str, Any]],
+    all_wifi: List[Dict[str, Any]],
+    all_firewall_policies: List[Dict[str, Any]],
+    all_dns_policies: List[Dict[str, Any]],
+    telemetry_probes: List[Dict[str, Any]],
+    legacy_aps: List[str],
+    client_age: Dict[str, int],
+) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+    offline = [_device_name(device) for device in all_devices if not _is_online(device)]
+    weak_wifi = _wifi_security_weak(all_wifi)
+    logging_disabled = sum(1 for policy in all_firewall_policies if not _as_bool(policy.get("loggingEnabled")))
+
+    if offline:
+        rows.append(["Immediate", "0-2 weeks", "Validate offline inventory", f"{', '.join(offline[:6])}", "IT operations"])
+    if telemetry_probes and not any(probe.get("available") for probe in telemetry_probes):
+        rows.append(["Immediate", "0-2 weeks", "Choose a deeper diagnostics source", "Integration API did not expose port/radio telemetry", "Network engineering"])
+    if weak_wifi:
+        rows.append(["Short-term", "2-6 weeks", "Review SSID security posture", "; ".join(weak_wifi[:2]), "Security / network engineering"])
+    if logging_disabled:
+        rows.append(["Short-term", "2-6 weeks", "Enable useful firewall policy logging", f"{logging_disabled} captured policy records have logging disabled", "Security operations"])
+    if not all_dns_policies:
+        rows.append(["Medium-term", "6-12 weeks", "Document DNS filtering ownership", "No UniFi DNS policies were captured", "Security / systems"])
+    if legacy_aps:
+        rows.append(["Medium-term", "6-12 weeks", "Plan wireless refresh candidates", f"{len(legacy_aps)} legacy AP candidate(s): {', '.join(legacy_aps[:4])}", "IT leadership"])
+    if client_age.get("31+ days", 0):
+        rows.append(["Medium-term", "6-12 weeks", "Clean stale client inventory", f"{client_age['31+ days']} client record(s) last seen more than 30 days before collection", "IT operations"])
+
+    rows.append(["Long-term", "3-6 months", "Build active-device migration scope", "Quote active/validated devices separately from offline or stale inventory", "IT leadership"])
+    return rows
 
 
 def _executive_followups(
@@ -1063,6 +1130,14 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append(_table(["Name", "Type", "IP", "MAC / ID", "Uplink Device", "Access", "Seen"], client_rows, "No client detail captured."))
     sections.append("</section>")
 
+    sections.append("<section><h2>7A. Client Analysis</h2>")
+    sections.append("<p>Client analysis uses the connected-client records exposed by the UniFi Network API. It should be treated as a useful planning sample, not a full historical accounting, unless longer-term logs are also exported.</p>")
+    sections.append("<h3>Client Overview Summary</h3>")
+    sections.append(_table(["Area", "Observed", "Planning Use"], _client_overview_rows(all_clients, collected_at), "No client detail captured."))
+    sections.append("<h3>Client Concentration by Uplink</h3>")
+    sections.append(_table(["Uplink Device", "Clients", "Share", "Interpretation"], _client_uplink_analysis_rows(all_clients, device_names), "No client uplink mapping captured."))
+    sections.append("</section>")
+
     sections.append("<section><h2>8. Security Baseline</h2>")
     sections.append(
         _table(
@@ -1079,7 +1154,25 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append("<p class='muted'>Security baseline rows are assessment cues from captured configuration, not a substitute for a full policy review. Missing rows may mean the control is implemented outside UniFi or not exposed by this API path.</p>")
     sections.append("</section>")
 
-    sections.append("<section><h2>9. Firewall and Policy Backup</h2>")
+    sections.append("<section><h2>9. Recommendations &amp; Implementation Plan</h2>")
+    sections.append("<p>The actions below are generated from captured UniFi inventory, client, WiFi, security, and API coverage evidence. Items avoid recommendations that require missing switch-port or AP-radio telemetry.</p>")
+    sections.append(
+        _table(
+            ["Priority", "Window", "Action", "Evidence", "Owner"],
+            _implementation_plan_rows(
+                all_devices=all_devices,
+                all_wifi=site_payloads["wifi"],
+                all_firewall_policies=site_payloads["firewall_policies"],
+                all_dns_policies=site_payloads["dns_policies"],
+                telemetry_probes=telemetry_probes,
+                legacy_aps=legacy_aps,
+                client_age=client_age,
+            ),
+        )
+    )
+    sections.append("</section>")
+
+    sections.append("<section><h2>10. Firewall and Policy Backup</h2>")
     for site in site_summaries:
         sections.append(f"<h3>{html.escape(str(site.get('name') or 'Site'))}</h3>")
         zones = _read_site_file(source, site, "firewall_zones")
@@ -1123,13 +1216,13 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             sections.append(_table(headers, rows, f"No {label.lower()} endpoint data captured."))
     sections.append("</section>")
 
-    sections.append("<section><h2>10. Raw Backup Files</h2>")
+    sections.append("<section><h2>11. Raw Backup Files</h2>")
     files = sorted(str(p.relative_to(source)) for p in source.rglob("*.json"))
     sections.append(_table(["JSON backup"], [[f] for f in files], "No JSON backup files found."))
     sections.append("</section>")
 
     complete_body = "\n".join(sections)
-    exec_body = _select_sections(complete_body, ("1. Executive Summary", "Guide. How to Use This Report"))
+    exec_body = _select_sections(complete_body, ("1. Executive Summary", "Guide. How to Use This Report", "9. Recommendations & Implementation Plan"))
     backup_body = _select_sections(
         complete_body,
         (
@@ -1137,8 +1230,8 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             "4. Configuration Backup Completeness",
             "6. Sites, Networks, VLANs, and DHCP",
             "8. Security Baseline",
-            "9. Firewall and Policy Backup",
-            "10. Raw Backup Files",
+            "10. Firewall and Policy Backup",
+            "11. Raw Backup Files",
         ),
     )
 
@@ -1207,9 +1300,11 @@ def _html_shell(
         ("5", "Device Health & Inventory"),
         ("6", "Sites, Networks, VLANs, and DHCP"),
         ("7", "WiFi and Client Visibility"),
+        ("7A", "Client Analysis"),
         ("8", "Security Baseline"),
-        ("9", "Firewall and Policy Backup"),
-        ("10", "Raw Backup Files"),
+        ("9", "Recommendations & Implementation Plan"),
+        ("10", "Firewall and Policy Backup"),
+        ("11", "Raw Backup Files"),
     ]
     toc_html = "".join(
         f'<li><span class="toc-num">{html.escape(str(number))}</span><span>{html.escape(str(label))}</span></li>'
