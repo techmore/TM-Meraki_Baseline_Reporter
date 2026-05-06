@@ -111,6 +111,36 @@ def _model_rows(devices: Iterable[Dict[str, Any]]) -> List[List[Any]]:
     return [[model, role, count] for (model, role), count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))]
 
 
+def _string_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if item not in (None, "")]
+    if value not in (None, ""):
+        return [str(value)]
+    return []
+
+
+def _join_list(value: Any) -> str:
+    return ", ".join(_string_list(value))
+
+
+def _interface_summary_rows(devices: Iterable[Dict[str, Any]]) -> List[List[Any]]:
+    counts: Dict[str, int] = {}
+    for device in devices:
+        for interface in set(_string_list(device.get("interfaces"))):
+            counts[interface] = counts.get(interface, 0) + 1
+    return [[name, count] for name, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def _interface_device_rows(devices: Iterable[Dict[str, Any]]) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+    for device in devices:
+        interfaces = _join_list(device.get("interfaces"))
+        features = _join_list(device.get("features"))
+        detail = "capability flag only" if interfaces else "not advertised"
+        rows.append([_device_name(device), _device_model(device), features, interfaces, detail])
+    return rows
+
+
 def _table(headers: List[str], rows: List[List[Any]], empty: str = "No data captured.") -> str:
     if not rows:
         return f"<p class='muted'>{html.escape(empty)}</p>"
@@ -287,6 +317,9 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sm = summary.get("siteManager") if isinstance(summary.get("siteManager"), dict) else {}
     net = summary.get("networkApplication") if isinstance(summary.get("networkApplication"), dict) else {}
     metadata = summary.get("metadata") if isinstance(summary.get("metadata"), dict) else {}
+    network_info = _load_json(source / str((net.get("files") or {}).get("info", "network_info.json")), {})
+    if not isinstance(network_info, dict):
+        network_info = {}
 
     sm_sites = _items(_load_json(source / str((sm.get("files") or {}).get("sites", "")), [])) if sm.get("files") else []
     sm_devices = _items(_load_json(source / str((sm.get("files") or {}).get("devices", "")), [])) if sm.get("files") else []
@@ -381,6 +414,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
         ["Requested mode", metadata.get("requestedMode", "")],
         ["Effective mode", metadata.get("effectiveMode", "")],
         ["Collected at", metadata.get("collectedAt", "")],
+        ["Network Application version", network_info.get("applicationVersion", "")],
         ["Site Manager", _surface_state(sm)],
         ["Network Application", _surface_state(net)],
     ]
@@ -405,6 +439,11 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append("<div><h3>By Status</h3>" + _table(["Status", "Count"], status_rows) + "</div></div>")
     sections.append("<h3>By Model</h3>")
     sections.append(_table(["Model", "Role", "Count"], _model_rows(all_devices), "No device model data captured."))
+    sections.append("<h3>Interface Telemetry Coverage</h3>")
+    sections.append("<p class='muted'>UniFi Network reports interface capability flags in this backup. Per-port and per-radio utilization metrics are not present in the captured Network Integration payloads.</p>")
+    sections.append("<div class='two-col'><div><h4>Advertised Interfaces</h4>" + _table(["Interface", "Devices"], _interface_summary_rows(all_devices), "No interface capability flags captured.") + "</div>")
+    sections.append("<div><h4>Telemetry Status</h4>" + _table(["Metric", "Status"], [["Port detail", "not present in backup"], ["Radio detail", "not present in backup"], ["Client uplink mapping", "captured"]]) + "</div></div>")
+    sections.append(_table(["Device", "Model", "Features", "Interfaces", "Detail"], _interface_device_rows(all_devices), "No device interface coverage captured."))
     device_rows = []
     for dev in all_devices[:300]:
         device_rows.append([

@@ -15,11 +15,12 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
         json.dumps(
             {
                 "metadata": {"requestedMode": "network", "effectiveMode": "network", "collectedAt": "2026-05-05T12:00:00"},
-                "networkApplication": {"enabled": True, "files": {"site_summaries": "network_site_summaries.json"}, "errors": []},
+                "networkApplication": {"enabled": True, "files": {"site_summaries": "network_site_summaries.json", "info": "network_info.json"}, "errors": []},
             }
         ),
         encoding="utf-8",
     )
+    (source / "network_info.json").write_text(json.dumps({"applicationVersion": "10.3.58"}), encoding="utf-8")
     (source / "network_site_summaries.json").write_text(
         json.dumps(
             [
@@ -43,9 +44,9 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     (site_dir / "devices.json").write_text(
         json.dumps(
             [
-                {"id": "ap-1", "name": "U7-Pro-1", "model": "U7-Pro", "type": "access point", "state": "ONLINE", "ipAddress": "10.1.1.10"},
-                {"name": "IW HD", "model": "IW HD", "features": ["switching", "accessPoint"], "state": "ONLINE", "ipAddress": "10.1.1.11"},
-                {"name": "USW-48", "model": "USW-Pro-48-PoE", "type": "switch", "state": "ONLINE", "ipAddress": "10.1.1.20"},
+                {"id": "ap-1", "name": "U7-Pro-1", "model": "U7-Pro", "type": "access point", "state": "ONLINE", "ipAddress": "10.1.1.10", "interfaces": ["ports", "radios"], "features": ["accessPoint"]},
+                {"name": "IW HD", "model": "IW HD", "features": ["switching", "accessPoint"], "interfaces": ["ports", "radios"], "state": "ONLINE", "ipAddress": "10.1.1.11"},
+                {"name": "USW-48", "model": "USW-Pro-48-PoE", "type": "switch", "state": "ONLINE", "ipAddress": "10.1.1.20", "interfaces": ["ports"], "features": ["switching"]},
             ]
         ),
         encoding="utf-8",
@@ -94,6 +95,11 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Internal" in html
     assert "U7-Pro-1 (U7-Pro)" in html
     assert "Firmware" in html
+    assert "Network Application version" in html
+    assert "10.3.58" in html
+    assert "Interface Telemetry Coverage" in html
+    assert "ports, radios" in html
+    assert "capability flag only" in html
 
 
 def test_unifi_profiles_discovers_numbered_site_profiles(monkeypatch):
