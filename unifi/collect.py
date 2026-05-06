@@ -12,7 +12,7 @@ from .env import load_env
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NETWORK_PREFIX = "/proxy/network/integration/v1"
+LOCAL_NETWORK_PREFIX = "/proxy/network/integration/v1"
 SOURCE_NOTES = [
     {
         "name": "Official UniFi API overview",
@@ -63,6 +63,21 @@ def _site_name(site: Dict[str, Any]) -> str:
     return str(site.get("name") or meta.get("name") or site.get("description") or _site_id(site) or "Default")
 
 
+def _site_matches(site: Dict[str, Any], selector: str) -> bool:
+    if not selector:
+        return True
+    wanted = selector.strip().lower()
+    values = {
+        str(site.get("id") or ""),
+        str(site.get("siteId") or ""),
+        str(site.get("_id") or ""),
+        str(site.get("internalReference") or ""),
+        str(site.get("name") or ""),
+        _site_name(site),
+    }
+    return wanted in {value.strip().lower() for value in values if value}
+
+
 def _call_list(client: UniFiClient, path: str, *, style: str, label: str, errors: List[Dict[str, Any]]) -> List[Any]:
     try:
         return client.paged_get(path, style=style)
@@ -101,22 +116,50 @@ def collect_site_manager(output: Path) -> Dict[str, Any]:
     return summary
 
 
-def collect_network_application(output: Path, selected_site_id: str = "") -> Dict[str, Any]:
+def _fatal_auth_errors(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    fatal: List[Dict[str, Any]] = []
+    for surface in ("siteManager", "networkApplication"):
+        payload = summary.get(surface)
+        if not isinstance(payload, dict) or not payload.get("enabled"):
+            continue
+        for error in payload.get("errors") or []:
+            if not isinstance(error, dict):
+                continue
+            if error.get("label") in {"site_manager_sites", "network_sites"} and error.get("status") in {401, 403}:
+                fatal.append({"surface": surface, **error})
+    return fatal
+
+
+def collect_network_application(output: Path, selected_site_id: str = "", console_id: str = "") -> Dict[str, Any]:
     api_key = os.getenv("UNIFI_NETWORK_API_KEY") or os.getenv("UNIFI_API_KEY")
     base_url = os.getenv("UNIFI_NETWORK_BASE_URL") or os.getenv("UNIFI_BASE_URL")
-    if not api_key or not base_url:
-        return {"enabled": False, "reason": "UNIFI_NETWORK_BASE_URL and UNIFI_NETWORK_API_KEY are not set"}
+    console_id = console_id or os.getenv("UNIFI_NETWORK_CONSOLE_ID", "")
+    if not api_key:
+        return {"enabled": False, "reason": "UNIFI_NETWORK_API_KEY is not set"}
+    if not base_url and not console_id:
+        return {"enabled": False, "reason": "Set UNIFI_NETWORK_BASE_URL for local access or UNIFI_NETWORK_CONSOLE_ID for remote connector access"}
+
+    connection_type = "remote" if console_id and not base_url else "local"
+    if connection_type == "remote":
+        base_url = os.getenv("UNIFI_NETWORK_REMOTE_BASE_URL", "https://api.ui.com")
+        network_prefix = f"/v1/connector/consoles/{console_id}/network/integration/v1"
+        verify_ssl = True
+    else:
+        network_prefix = LOCAL_NETWORK_PREFIX
+        verify_ssl = _bool_env("UNIFI_VERIFY_SSL", False)
 
     client = UniFiClient(
-        base_url,
+        base_url or "",
         api_key,
         timeout=int(os.getenv("UNIFI_REQUEST_TIMEOUT", "30")),
-        verify_ssl=_bool_env("UNIFI_VERIFY_SSL", False),
+        verify_ssl=verify_ssl,
     )
     errors: List[Dict[str, Any]] = []
     summary: Dict[str, Any] = {
         "enabled": True,
         "baseUrl": client.base_url,
+        "connectionType": connection_type,
+        "consoleId": console_id or None,
         "verifySsl": client.verify_ssl,
         "files": {},
         "counts": {},
@@ -124,16 +167,16 @@ def collect_network_application(output: Path, selected_site_id: str = "") -> Dic
     }
 
     try:
-        info = client.get_json(f"{NETWORK_PREFIX}/info")
+        info = client.get_json(f"{network_prefix}/info")
     except UniFiRequestError as exc:
         info = {"error": str(exc), "status": exc.status}
-        errors.append({"label": "network_info", "path": f"{NETWORK_PREFIX}/info", "status": exc.status, "error": str(exc)})
+        errors.append({"label": "network_info", "path": f"{network_prefix}/info", "status": exc.status, "error": str(exc)})
     _write_json(output / "network_info.json", info)
     summary["files"]["info"] = "network_info.json"
 
-    sites = _call_list(client, f"{NETWORK_PREFIX}/sites", style="offset", label="network_sites", errors=errors)
+    sites = _call_list(client, f"{network_prefix}/sites", style="offset", label="network_sites", errors=errors)
     if selected_site_id:
-        sites = [site for site in _items(sites) if _site_id(site) == selected_site_id]
+        sites = [site for site in _items(sites) if _site_matches(site, selected_site_id)]
     _write_json(output / "network_sites.json", sites)
     summary["files"]["sites"] = "network_sites.json"
     summary["counts"]["sites"] = len(sites)
@@ -164,7 +207,7 @@ def collect_network_application(output: Path, selected_site_id: str = "") -> Dic
         safe = _safe_name(name or sid)
         site_summary: Dict[str, Any] = {"id": sid, "name": name, "files": {}, "counts": {}}
         for label, suffix in site_endpoints:
-            path = f"{NETWORK_PREFIX}/sites/{sid}/{suffix}"
+            path = f"{network_prefix}/sites/{sid}/{suffix}"
             data = _call_list(client, path, style="offset", label=f"{name}:{label}", errors=errors)
             rel = f"sites/{safe}/{label}.json"
             _write_json(output / rel, data)
@@ -182,6 +225,7 @@ def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Collect UniFi Site Manager and Network Application data.")
     parser.add_argument("--mode", choices=["auto", "site-manager", "network", "both"], default=os.getenv("UNIFI_COLLECTION_MODE", "auto"))
     parser.add_argument("--site-id", default=os.getenv("UNIFI_SITE_ID", ""))
+    parser.add_argument("--console-id", default=os.getenv("UNIFI_NETWORK_CONSOLE_ID", ""))
     parser.add_argument("--output-dir", default=str(ROOT / "unifi" / "backups" / "latest"))
     args = parser.parse_args(argv)
 
@@ -191,7 +235,15 @@ def main(argv: List[str] | None = None) -> int:
 
     mode = args.mode
     if mode == "auto":
-        has_network = bool((os.getenv("UNIFI_NETWORK_API_KEY") or os.getenv("UNIFI_API_KEY")) and (os.getenv("UNIFI_NETWORK_BASE_URL") or os.getenv("UNIFI_BASE_URL")))
+        has_network = bool(
+            (os.getenv("UNIFI_NETWORK_API_KEY") or os.getenv("UNIFI_API_KEY"))
+            and (
+                os.getenv("UNIFI_NETWORK_BASE_URL")
+                or os.getenv("UNIFI_BASE_URL")
+                or args.console_id
+                or os.getenv("UNIFI_NETWORK_CONSOLE_ID")
+            )
+        )
         has_site_manager = bool(os.getenv("UNIFI_SITE_MANAGER_API_KEY") or os.getenv("UNIFI_API_KEY"))
         if has_network and has_site_manager:
             mode = "both"
@@ -201,7 +253,7 @@ def main(argv: List[str] | None = None) -> int:
             mode = "site-manager"
         else:
             print("Missing UniFi API configuration.", file=sys.stderr)
-            print("Set UNIFI_NETWORK_BASE_URL + UNIFI_NETWORK_API_KEY, or UNIFI_SITE_MANAGER_API_KEY.", file=sys.stderr)
+            print("Set UNIFI_NETWORK_BASE_URL or UNIFI_NETWORK_CONSOLE_ID with UNIFI_NETWORK_API_KEY, or set UNIFI_SITE_MANAGER_API_KEY.", file=sys.stderr)
             return 1
 
     metadata: Dict[str, Any] = {
@@ -210,19 +262,25 @@ def main(argv: List[str] | None = None) -> int:
         "effectiveMode": mode,
         "sourceNotes": SOURCE_NOTES,
         "siteIdFilter": args.site_id or None,
+        "consoleId": args.console_id or None,
     }
     summary: Dict[str, Any] = {"metadata": metadata}
     if mode in {"site-manager", "both"}:
         summary["siteManager"] = collect_site_manager(output)
     if mode in {"network", "both"}:
-        summary["networkApplication"] = collect_network_application(output, args.site_id)
+        summary["networkApplication"] = collect_network_application(output, args.site_id, args.console_id)
 
     _write_json(output / "collection_summary.json", summary)
     print(f"Collected UniFi data into {output}")
     print(json.dumps(summary, indent=2))
+    fatal = _fatal_auth_errors(summary)
+    if fatal:
+        print("Fatal UniFi authorization failure on required site-discovery endpoint.", file=sys.stderr)
+        for err in fatal:
+            print(f"- {err.get('surface')} {err.get('label')}: HTTP {err.get('status')}", file=sys.stderr)
+        return 1
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

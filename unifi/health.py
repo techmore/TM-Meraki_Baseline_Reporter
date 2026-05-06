@@ -21,7 +21,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Python: {sys.version.split()[0]}")
 
     site_manager = bool(os.getenv("UNIFI_SITE_MANAGER_API_KEY") or os.getenv("UNIFI_API_KEY"))
-    network = bool((os.getenv("UNIFI_NETWORK_API_KEY") or os.getenv("UNIFI_API_KEY")) and (os.getenv("UNIFI_NETWORK_BASE_URL") or os.getenv("UNIFI_BASE_URL")))
+    network = bool(
+        (os.getenv("UNIFI_NETWORK_API_KEY") or os.getenv("UNIFI_API_KEY"))
+        and (
+            os.getenv("UNIFI_NETWORK_BASE_URL")
+            or os.getenv("UNIFI_BASE_URL")
+            or os.getenv("UNIFI_NETWORK_CONSOLE_ID")
+        )
+    )
     print(f"Site Manager API config: {'ok' if site_manager else 'missing'}")
     print(f"Network Application API config: {'ok' if network else 'missing'}")
 
@@ -34,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Existing UniFi backup: missing ({backup_summary})")
     elif not site_manager and not network:
         failures += 1
-        print("Set either UNIFI_SITE_MANAGER_API_KEY or UNIFI_NETWORK_BASE_URL + UNIFI_NETWORK_API_KEY.")
+        print("Set either UNIFI_SITE_MANAGER_API_KEY, or UNIFI_NETWORK_API_KEY plus UNIFI_NETWORK_BASE_URL/UNIFI_NETWORK_CONSOLE_ID.")
 
     try:
         import weasyprint  # noqa: F401

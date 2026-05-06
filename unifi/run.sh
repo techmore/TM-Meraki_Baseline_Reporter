@@ -10,6 +10,8 @@ usage() {
   echo "      --mode <auto|site-manager|network|both>"
   echo "                       API collection mode. Default: auto"
   echo "      --site-id <id>   Limit local Network Application collection to one site ID"
+  echo "      --console-id <id>"
+  echo "                       Use api.ui.com remote connector for this console ID"
   echo "      --report-only    Skip API collection; build report from unifi/backups/latest"
   echo "      --backups-dir <dir>"
   echo "                       Backup JSON directory. Default: unifi/backups/latest"
@@ -23,6 +25,7 @@ usage() {
   echo "  Env examples:"
   echo "    UNIFI_SITE_MANAGER_API_KEY=... ./unifi/run.sh"
   echo "    UNIFI_NETWORK_BASE_URL=https://192.168.1.1 UNIFI_NETWORK_API_KEY=... ./unifi/run.sh"
+  echo "    UNIFI_NETWORK_CONSOLE_ID=58D...:123 UNIFI_NETWORK_API_KEY=... ./unifi/run.sh"
   echo "    UNIFI_VERIFY_SSL=0 ./unifi/run.sh --mode network"
 }
 
@@ -32,6 +35,7 @@ NO_OPEN=0
 HEALTH_CHECK=0
 KEEP_HTML=0
 SITE_ID="${UNIFI_SITE_ID:-}"
+CONSOLE_ID="${UNIFI_NETWORK_CONSOLE_ID:-}"
 BACKUPS_DIR="unifi/backups/latest"
 REPORTS_DIR="unifi/reports/latest"
 
@@ -48,6 +52,14 @@ while [[ $# -gt 0 ]]; do
     --site-id)
       SITE_ID="${2:-}"
       if [[ -z "$SITE_ID" || "$SITE_ID" == --* ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --console-id)
+      CONSOLE_ID="${2:-}"
+      if [[ -z "$CONSOLE_ID" || "$CONSOLE_ID" == --* ]]; then
         echo "Missing value for $1" >&2
         exit 2
       fi
@@ -142,6 +154,9 @@ if (( failures == 0 )); then
     collect_args=(--mode "$MODE" --output-dir "$BACKUPS_DIR")
     if [[ -n "$SITE_ID" ]]; then
       collect_args+=(--site-id "$SITE_ID")
+    fi
+    if [[ -n "$CONSOLE_ID" ]]; then
+      collect_args+=(--console-id "$CONSOLE_ID")
     fi
     run_stage "Query UniFi API" "$PYTHON_BIN" -m unifi.collect "${collect_args[@]}" || failures=$((failures + 1))
   else
