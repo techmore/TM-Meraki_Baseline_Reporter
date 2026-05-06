@@ -100,14 +100,21 @@ This project is currently functional as a Python reporting pipeline. The immedia
 
 ## Phase 6: UniFi / Ubiquiti Reporting - Started
 
-- Add a separate `./unifi/run.sh` runner so UniFi work does not regress the
-  Meraki pipeline.
-- Support both official Site Manager API collection and local UniFi Network
-  Application Integration API collection.
-- Save raw UniFi JSON backups separately under `unifi/backups/`.
-- Generate a first-pass UniFi baseline report under `unifi/reports/`.
-- Treat local Network Application endpoint gaps as reportable coverage findings
-  while we learn the exact controller version and API surface.
+- ~~Add a separate `./unifi/run.sh` runner so UniFi work does not regress the
+  Meraki pipeline.~~
+- ~~Support both official Site Manager API collection and local UniFi Network
+  Application Integration API collection.~~
+- ~~Save raw UniFi JSON backups separately under `unifi/backups/`.~~
+- ~~Generate a first-pass UniFi baseline report under `unifi/reports/`.~~
+- ~~Treat local Network Application endpoint gaps as reportable coverage
+  findings while we learn the exact controller version and API surface.~~
+- ~~Add saved site profiles in `unifi/.env` and `./unifi/run.sh --all-sites`
+  for multi-site runs.~~
+- ~~Write UniFi report inventory data and a static `index.html` for generated
+  outputs.~~
+- Improve UniFi executive summary language once more live sites are captured.
+- Add deeper UniFi switch/AP port and radio telemetry when the controller API
+  exposes it.
 
 ## Release Checklist
 

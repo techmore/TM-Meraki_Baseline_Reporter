@@ -67,7 +67,8 @@ available on a given controller.
 Outputs are written to:
 
 - `unifi/backups/latest/` for raw JSON backups
-- `unifi/reports/latest/` for `report.pdf`, `report.html`, and inventory data
+- `unifi/reports/latest/` for `report.pdf`, optional `report.html`,
+  `report_inventory.json`, and `index.html`
 
 When `--all-sites` is used, outputs are separated by saved profile:
 
