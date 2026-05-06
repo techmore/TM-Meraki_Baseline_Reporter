@@ -37,6 +37,8 @@ def test_unifi_site_index_links_profile_reports(tmp_path: Path):
     html = build_site_index_html(manifest, reports_root, datetime(2026, 5, 5, tzinfo=timezone.utc))
 
     assert "TM UniFi Site Reports" in html
+    assert "max-width: 1180px" in html
+    assert "margin: 16px 0" in html
     assert "First Campus" in html
     assert 'href="First_Campus/report.pdf"' in html
     assert 'href="First_Campus/index.html"' in html

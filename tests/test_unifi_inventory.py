@@ -21,6 +21,8 @@ def test_unifi_inventory_requires_pdf_and_writes_index(tmp_path: Path):
     assert {item["label"]: item["ok"] for item in manifest["items"]}["report_pdf"] is True
     assert {item["label"]: item["required"] for item in manifest["items"]}["report_html"] is False
     assert "TM UniFi Report Inventory" in index
+    assert "max-width: 1180px" in index
+    assert "margin: 16px 0" in index
     assert "report.pdf" in index
     assert "collection_summary.json" in index
 
