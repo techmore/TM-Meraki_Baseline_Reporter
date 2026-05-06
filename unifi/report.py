@@ -11,6 +11,40 @@ from typing import Any, Dict, Iterable, List
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SITE_ENDPOINT_ORDER = [
+    "devices",
+    "clients",
+    "networks",
+    "wifi",
+    "wans",
+    "firewall_zones",
+    "firewall_policies",
+    "acl_rules",
+    "traffic_lists",
+    "dns_policies",
+    "radius",
+    "hotspot_vouchers",
+    "vpn_servers",
+    "vpn_tunnels",
+    "telemetry_probe",
+]
+SITE_ENDPOINT_LABELS = {
+    "acl_rules": "ACL rules",
+    "clients": "Clients",
+    "devices": "Devices",
+    "dns_policies": "DNS policies",
+    "firewall_policies": "Firewall policies",
+    "firewall_zones": "Firewall zones",
+    "hotspot_vouchers": "Hotspot vouchers",
+    "networks": "Networks / VLANs",
+    "radius": "RADIUS profiles",
+    "telemetry_probe": "Telemetry probes",
+    "traffic_lists": "Traffic lists",
+    "vpn_servers": "VPN servers",
+    "vpn_tunnels": "VPN tunnels",
+    "wans": "WANs",
+    "wifi": "WiFi broadcasts",
+}
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -175,6 +209,76 @@ def _probe_rows(probes: Iterable[Dict[str, Any]]) -> List[List[Any]]:
                 _yes_no(probe.get("available")),
                 probe.get("itemCount", 0),
                 probe.get("purpose") or probe.get("note") or "",
+            ]
+        )
+    return rows
+
+
+def _site_endpoint_key(label: str, site_name: str) -> str:
+    prefix = f"{site_name}:"
+    if label.startswith(prefix):
+        return label[len(prefix) :]
+    if ":" in label:
+        return label.split(":", 1)[1]
+    return label
+
+
+def _endpoint_issue_map(site_name: str, records: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    mapped: Dict[str, Dict[str, Any]] = {}
+    for record in records:
+        label = str(record.get("label") or "")
+        if ":" in label and not label.startswith(f"{site_name}:"):
+            continue
+        key = _site_endpoint_key(label, site_name)
+        if key:
+            mapped[key] = record
+    return mapped
+
+
+def _site_file_keys(files: Dict[str, Any]) -> List[str]:
+    known = [key for key in SITE_ENDPOINT_ORDER if key in files]
+    extra = sorted(key for key in files if key not in SITE_ENDPOINT_ORDER)
+    return known + extra
+
+
+def _backup_count_label(key: str, counts: Dict[str, Any]) -> str:
+    if key == "telemetry_probe":
+        total = counts.get("telemetry_probe_total")
+        available = counts.get("telemetry_probe_available")
+        if total is not None or available is not None:
+            return f"{available or 0} / {total or 0} available"
+    return str(counts.get(key, ""))
+
+
+def _backup_status_label(key: str, count_label: str, error: Dict[str, Any] | None, unsupported: Dict[str, Any] | None) -> str:
+    if unsupported:
+        return f"not exposed (HTTP {unsupported.get('status')})" if unsupported.get("status") else "not exposed"
+    if error:
+        return f"error (HTTP {error.get('status')})" if error.get("status") else "error"
+    if key == "telemetry_probe":
+        return "probed"
+    try:
+        count = int(count_label)
+    except (TypeError, ValueError):
+        return "captured" if count_label else "unknown"
+    return "captured" if count > 0 else "captured empty"
+
+
+def _backup_completeness_rows(site: Dict[str, Any], errors: Iterable[Dict[str, Any]], unsupported: Iterable[Dict[str, Any]]) -> List[List[Any]]:
+    files = site.get("files") if isinstance(site.get("files"), dict) else {}
+    counts = site.get("counts") if isinstance(site.get("counts"), dict) else {}
+    site_name = str(site.get("name") or site.get("id") or "Site")
+    error_map = _endpoint_issue_map(site_name, errors)
+    unsupported_map = _endpoint_issue_map(site_name, unsupported)
+    rows: List[List[Any]] = []
+    for key in _site_file_keys(files):
+        count_label = _backup_count_label(key, counts)
+        rows.append(
+            [
+                SITE_ENDPOINT_LABELS.get(key, key.replace("_", " ").title()),
+                count_label,
+                _backup_status_label(key, count_label, error_map.get(key), unsupported_map.get(key)),
+                files.get(key, ""),
             ]
         )
     return rows
@@ -471,6 +575,21 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     if auth_guidance:
         sections.append("<h3>Credential / Access Fix</h3>")
         sections.append("<ul>" + "".join(f"<li>{html.escape(item)}</li>" for item in auth_guidance) + "</ul>")
+    sections.append("</section>")
+
+    sections.append("<section><h2>Configuration Backup Completeness</h2>")
+    if site_summaries:
+        for site in site_summaries:
+            sections.append(f"<h3>{html.escape(str(site.get('name') or site.get('id') or 'Site'))}</h3>")
+            sections.append(
+                _table(
+                    ["Area", "Items", "Status", "Backup JSON"],
+                    _backup_completeness_rows(site, errors, unsupported),
+                    "No site-scoped backup files were captured.",
+                )
+            )
+    else:
+        sections.append("<p class='muted'>No local Network Application site backup detail captured.</p>")
     sections.append("</section>")
 
     sections.append("<section><h2>Device Inventory</h2>")

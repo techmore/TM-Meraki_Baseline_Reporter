@@ -117,6 +117,8 @@ This project is currently functional as a Python reporting pipeline. The immedia
   port/radio capability flags from detailed per-port/per-radio metrics.~~
 - ~~Probe likely UniFi port/radio telemetry endpoints during collection and save
   structured coverage evidence in the backup/report.~~
+- ~~Add a UniFi configuration backup completeness matrix showing captured,
+  captured-empty, and unsupported endpoint coverage.~~
 - Add deeper UniFi switch/AP port and radio telemetry when the controller API
   exposes it.
 

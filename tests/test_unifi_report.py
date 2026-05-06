@@ -15,7 +15,14 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
         json.dumps(
             {
                 "metadata": {"requestedMode": "network", "effectiveMode": "network", "collectedAt": "2026-05-05T12:00:00"},
-                "networkApplication": {"enabled": True, "files": {"site_summaries": "network_site_summaries.json", "info": "network_info.json"}, "errors": []},
+                "networkApplication": {
+                    "enabled": True,
+                    "files": {"site_summaries": "network_site_summaries.json", "info": "network_info.json"},
+                    "errors": [],
+                    "unsupportedEndpoints": [
+                        {"label": "Main:vpn_tunnels", "status": 404, "path": "/vpn/tunnels", "note": "Not exposed."}
+                    ],
+                },
             }
         ),
         encoding="utf-8",
@@ -34,9 +41,22 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
                         "wifi": "sites/Main/wifi.json",
                         "firewall_zones": "sites/Main/firewall_zones.json",
                         "firewall_policies": "sites/Main/firewall_policies.json",
+                        "dns_policies": "sites/Main/dns_policies.json",
+                        "vpn_tunnels": "sites/Main/vpn_tunnels.json",
                         "telemetry_probe": "sites/Main/telemetry_probe.json",
                     },
-                    "counts": {"devices": 3, "clients": 1, "networks": 1, "wifi": 1, "firewall_zones": 1, "firewall_policies": 1},
+                    "counts": {
+                        "devices": 3,
+                        "clients": 1,
+                        "networks": 1,
+                        "wifi": 1,
+                        "firewall_zones": 1,
+                        "firewall_policies": 1,
+                        "dns_policies": 0,
+                        "vpn_tunnels": 0,
+                        "telemetry_probe_available": 0,
+                        "telemetry_probe_total": 2,
+                    },
                 }
             ]
         ),
@@ -76,6 +96,8 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     )
     (site_dir / "firewall_zones.json").write_text(json.dumps([{"name": "Internal", "id": "zone-1"}]), encoding="utf-8")
     (site_dir / "firewall_policies.json").write_text(json.dumps([{"name": "Allow Staff", "enabled": True, "action": {"type": "ALLOW"}}]), encoding="utf-8")
+    (site_dir / "dns_policies.json").write_text(json.dumps([]), encoding="utf-8")
+    (site_dir / "vpn_tunnels.json").write_text(json.dumps([]), encoding="utf-8")
     (site_dir / "telemetry_probe.json").write_text(
         json.dumps(
             [
@@ -113,6 +135,11 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "API Telemetry Probe Results" in html
     assert "site_ports" in html
     assert "HTTP 404" in html
+    assert "Configuration Backup Completeness" in html
+    assert "Networks / VLANs" in html
+    assert "0 / 2 available" in html
+    assert "captured empty" in html
+    assert "not exposed (HTTP 404)" in html
 
 
 def test_unifi_profiles_discovers_numbered_site_profiles(monkeypatch):
