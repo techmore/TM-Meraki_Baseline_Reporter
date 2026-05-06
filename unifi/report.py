@@ -364,16 +364,40 @@ def _section_title(block: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", match.group(1))).strip()
 
 
+def _section_anchor(title: str) -> str:
+    clean = title.lower().replace("&", " and ")
+    clean = re.sub(r"[^a-z0-9]+", "-", clean).strip("-")
+    return clean or "section"
+
+
+def _anchor_sections(body: str) -> str:
+    seen: Dict[str, int] = {}
+
+    def repl(match: re.Match[str]) -> str:
+        attrs = match.group(1) or ""
+        title = html.unescape(re.sub(r"<[^>]+>", "", match.group(2))).strip()
+        anchor = _section_anchor(title)
+        count = seen.get(anchor, 0)
+        seen[anchor] = count + 1
+        if count:
+            anchor = f"{anchor}-{count + 1}"
+        if " id=" not in attrs:
+            attrs = f'{attrs} id="{html.escape(anchor, quote=True)}"'
+        return f"<section{attrs}><h2>{match.group(2)}</h2>"
+
+    return re.sub(r"<section([^>]*)>\s*<h2>(.*?)</h2>", repl, body, flags=re.DOTALL)
+
+
 def _select_sections(body: str, wanted_prefixes: Iterable[str]) -> str:
     prefixes = tuple(wanted_prefixes)
-    blocks = re.findall(r"<section>.*?</section>", body, re.DOTALL)
+    blocks = re.findall(r"<section(?:\s[^>]*)?>.*?</section>", body, re.DOTALL)
     selected = [block for block in blocks if _section_title(block).startswith(prefixes)]
     return "\n".join(selected)
 
 
-def _toc_items(section_body: str) -> List[tuple[str, str]]:
-    items: List[tuple[str, str]] = []
-    for block in re.findall(r"<section>.*?</section>", section_body, re.DOTALL):
+def _toc_items(section_body: str) -> List[tuple[str, str, str]]:
+    items: List[tuple[str, str, str]] = []
+    for block in re.findall(r"<section(?:\s[^>]*)?>.*?</section>", section_body, re.DOTALL):
         title = _section_title(block)
         if not title:
             continue
@@ -381,7 +405,7 @@ def _toc_items(section_body: str) -> List[tuple[str, str]]:
             number, label = title.split(". ", 1)
         else:
             number, label = "Guide", title.replace("Guide. ", "")
-        items.append((number, label))
+        items.append((number, label, _section_anchor(title)))
     return items
 
 
@@ -641,6 +665,38 @@ def _network_service_summary_rows(site: Dict[str, Any], source: Path) -> List[Li
     return rows
 
 
+def _display_from_safe_name(value: str) -> str:
+    cleaned = value.replace("_", " ").replace("-", " ").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", cleaned)
+    return " ".join(part.capitalize() if part.isupper() else part for part in cleaned.split())
+
+
+def _report_scope_label(source: Path, site_summaries: List[Dict[str, Any]], all_devices: List[Dict[str, Any]]) -> str:
+    if source.name not in {"latest", "backups"} and source.parent.name in {"sites", "backups"}:
+        derived = _display_from_safe_name(source.name)
+        if derived:
+            return derived
+    if len(site_summaries) == 1:
+        site_name = str(site_summaries[0].get("name") or "")
+        if site_name and site_name.lower() != "default":
+            return site_name
+    gateways = [device for device in all_devices if _device_role(device) == "Gateway" and _device_name(device) != "Unknown device"]
+    if gateways:
+        gateway_name = _display_from_safe_name(_device_name(gateways[0]))
+        if len(site_summaries) == 1:
+            site_name = str(site_summaries[0].get("name") or "")
+            if site_name:
+                return f"{gateway_name} / {site_name}"
+        return gateway_name
+    if len(site_summaries) == 1:
+        return str(site_summaries[0].get("name") or site_summaries[0].get("id") or "UniFi site")
+    if site_summaries:
+        return f"{len(site_summaries)} UniFi sites"
+    return "UniFi network"
+
+
 def _network_flags(netw: Dict[str, Any]) -> str:
     flags: List[str] = []
     if _as_bool(netw.get("default")):
@@ -736,7 +792,7 @@ def _network_for_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address, netw
     return "not matched to captured subnet"
 
 
-def _client_address_observation_rows(clients: List[Dict[str, Any]], networks: List[Dict[str, Any]]) -> List[List[Any]]:
+def _client_address_observation_rows(clients: List[Dict[str, Any]], networks: List[Dict[str, Any]], device_names: Dict[str, str]) -> List[List[Any]]:
     grouped: Dict[str, Dict[str, Any]] = {}
     for client in clients:
         address = _client_ip(client)
@@ -748,7 +804,8 @@ def _client_address_observation_rows(clients: List[Dict[str, Any]], networks: Li
         row["addresses"].append(address)
         client_type = _first(client, ("type", "connectionType"), "Unknown")
         row["types"][client_type] = row["types"].get(client_type, 0) + 1
-        uplink = _first(client, ("uplinkDeviceName", "uplinkDeviceId", "uplinkDeviceMac"), "Unknown")
+        uplink_raw = _first(client, ("uplinkDeviceName", "uplinkDeviceId", "uplinkDeviceMac"), "Unknown")
+        uplink = device_names.get(uplink_raw, uplink_raw)
         row["uplinks"][uplink] = row["uplinks"].get(uplink, 0) + 1
         row["matched"] = row["matched"] or _network_for_ip(address, networks)
 
@@ -1606,7 +1663,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append(_table(["Name", "Role", "Model", "Status", "Update", "IP", "MAC / ID", "Firmware"], device_rows))
     sections.append("</section>")
 
-    sections.append("<section><h2>6. Sites, Networks, VLANs, and DHCP</h2>")
+    sections.append("<section class='wide-section'><h2>6. Sites, Networks, VLANs, and DHCP</h2>")
     sections.append("<p>This section renders configured network/VLAN fields when the UniFi API exposes them, then separately summarizes observed client address space. The observed address table is useful for planning, but it is not a full DHCP lease export.</p>")
     for site in site_summaries:
         sections.append(f"<h3>{html.escape(str(site.get('name') or site.get('id') or 'Site'))}</h3>")
@@ -1617,7 +1674,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
         sections.append("<h4>Configured Networks / VLANs</h4>")
         sections.append(_table(["Network", "VLAN", "Enabled", "Flags", "Subnet", "Gateway", "DHCP", "DHCP Range", "DNS", "Zone", "Origin"], _network_rows(networks, zone_names), "No network/VLAN endpoint data captured for this site."))
         sections.append("<h4>Observed Client Address Space</h4>")
-        sections.append(_table(["Observed Prefix", "Clients", "Observed IP Range", "Client Mix", "Matched Network", "Top Uplinks", "Confidence"], _client_address_observation_rows(clients, networks), "No client IP addresses captured for this site."))
+        sections.append(_table(["Observed Prefix", "Clients", "Observed IP Range", "Client Mix", "Matched Network", "Top Uplinks", "Confidence"], _client_address_observation_rows(clients, networks, device_names), "No client IP addresses captured for this site."))
     if not site_summaries:
         sections.append("<p class='muted'>No local Network Application site detail captured yet.</p>")
     sections.append("</section>")
@@ -1710,7 +1767,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append("<p class='muted'>Not included: tax, freight, optics/transceivers, cabling, installation labor, configuration labor, licensing/subscription changes, contingency, or reseller/E-rate discounts.</p>")
     sections.append("</section>")
 
-    sections.append("<section><h2>11. Firewall and Policy Backup</h2>")
+    sections.append("<section class='wide-section'><h2>11. Firewall and Policy Backup</h2>")
     for site in site_summaries:
         sections.append(f"<h3>{html.escape(str(site.get('name') or 'Site'))}</h3>")
         zones = _read_site_file(source, site, "firewall_zones")
@@ -1757,7 +1814,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             sections.append(_table(headers, rows, f"No {label.lower()} endpoint data captured."))
     sections.append("</section>")
 
-    sections.append("<section><h2>12. Network Services Backup</h2>")
+    sections.append("<section class='wide-section'><h2>12. Network Services Backup</h2>")
     sections.append("<p>This section renders service-oriented configuration that is already saved in the raw UniFi JSON backup. Empty tables are still useful because they document that the endpoint was captured and currently returned no configured records.</p>")
     for site in site_summaries:
         sections.append(f"<h3>{html.escape(str(site.get('name') or 'Site'))}</h3>")
@@ -1798,6 +1855,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             "13. Raw Backup Files",
         ),
     )
+    scope_label = _report_scope_label(source, site_summaries, all_devices)
 
     html_doc = _html_shell(
         "TM UniFi Baseline",
@@ -1805,6 +1863,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
         metadata,
         report_title="UniFi Network Health & Backup Report",
         report_subtitle="Complete assessment, configuration evidence, and client visibility.",
+        scope_label=scope_label,
     )
     exec_doc = _html_shell(
         "TM UniFi Executive Summary",
@@ -1813,6 +1872,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
         report_title="UniFi Executive Summary",
         report_subtitle="Leadership-ready risks, priorities, and data confidence.",
         toc_items=_toc_items(exec_body),
+        scope_label=scope_label,
     )
     backup_doc = _html_shell(
         "TM UniFi Backup Settings",
@@ -1821,6 +1881,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
         report_title="UniFi Backup Settings Report",
         report_subtitle="Configuration backup coverage, security policy evidence, and raw JSON index.",
         toc_items=_toc_items(backup_body),
+        scope_label=scope_label,
     )
     html_path = output / "report.html"
     pdf_path = output / "report.pdf"
@@ -1851,30 +1912,46 @@ def _html_shell(
     *,
     report_title: str = "UniFi Network Health & Backup Report",
     report_subtitle: str = "TM UniFi Baseline",
-    toc_items: List[tuple[str, str]] | None = None,
+    toc_items: List[tuple[str, str, str]] | None = None,
+    scope_label: str = "UniFi network",
 ) -> str:
     release = datetime.now().strftime("%Y_%m_%d")
     collected = metadata.get("collectedAt") or "not captured"
     toc_items = toc_items or [
-        ("1", "Executive Summary"),
-        ("Guide", "How to Use This Report"),
-        ("2", "Collection Coverage"),
-        ("3", "Network Overview"),
-        ("4", "Configuration Backup Completeness"),
-        ("5", "Device Health & Inventory"),
-        ("6", "Sites, Networks, VLANs, and DHCP"),
-        ("7", "WiFi and Client Visibility"),
-        ("7A", "Client Analysis"),
-        ("8", "Security Baseline"),
-        ("9", "Recommendations & Implementation Plan"),
-        ("10", "Hardware Refresh & Budget Planning"),
-        ("11", "Firewall and Policy Backup"),
-        ("12", "Network Services Backup"),
-        ("13", "Raw Backup Files"),
+        ("1", "Executive Summary", "1-executive-summary"),
+        ("Guide", "How to Use This Report", "guide-how-to-use-this-report"),
+        ("2", "Collection Coverage", "2-collection-coverage"),
+        ("3", "Network Overview", "3-network-overview"),
+        ("4", "Configuration Backup Completeness", "4-configuration-backup-completeness"),
+        ("5", "Device Health & Inventory", "5-device-health-and-inventory"),
+        ("6", "Sites, Networks, VLANs, and DHCP", "6-sites-networks-vlans-and-dhcp"),
+        ("7", "WiFi and Client Visibility", "7-wifi-and-client-visibility"),
+        ("7A", "Client Analysis", "7a-client-analysis"),
+        ("8", "Security Baseline", "8-security-baseline"),
+        ("9", "Recommendations & Implementation Plan", "9-recommendations-and-implementation-plan"),
+        ("10", "Hardware Refresh & Budget Planning", "10-hardware-refresh-and-budget-planning"),
+        ("11", "Firewall and Policy Backup", "11-firewall-and-policy-backup"),
+        ("12", "Network Services Backup", "12-network-services-backup"),
+        ("13", "Raw Backup Files", "13-raw-backup-files"),
     ]
+    body = _anchor_sections(body)
+    end_report = f"""
+  <section class="end-report">
+    <div class="end-report-inner">
+      <h2>End of Report</h2>
+      <p>{html.escape(report_title)}</p>
+      <p>{html.escape(scope_label)}</p>
+      <p class="muted">Prepared by Techmore. Release {html.escape(release)}.</p>
+    </div>
+  </section>
+"""
     toc_html = "".join(
-        f'<li><span class="toc-num">{html.escape(str(number))}</span><span>{html.escape(str(label))}</span></li>'
-        for number, label in toc_items
+        (
+            f'<li><a class="toc-link" href="#{html.escape(str(anchor), quote=True)}">'
+            f'<span class="toc-num">{html.escape(str(number))}</span>'
+            f'<span>{html.escape(str(label))}</span></a></li>'
+        )
+        for number, label, anchor in toc_items
     )
     return f"""<!doctype html>
 <html>
@@ -1897,6 +1974,32 @@ def _html_shell(
     }}
     @page {{
       margin: 22mm 12mm 20mm;
+      background: var(--olive-100);
+      @top-left {{
+        content: "TM UNIFI BASELINE";
+        color: #575d3d;
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }}
+      @top-right {{
+        content: "Release {release}";
+        color: #78716c;
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+        font-size: 8px;
+      }}
+      @bottom-center {{
+        content: "Page " counter(page) " of " counter(pages);
+        color: #78716c;
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+        font-size: 8px;
+      }}
+    }}
+    @page wide-page {{
+      size: A4 landscape;
+      margin: 12mm 8mm 10mm;
       background: var(--olive-100);
       @top-left {{
         content: "TM UNIFI BASELINE";
@@ -1994,6 +2097,14 @@ def _html_shell(
       color: var(--olive-200);
       margin: 0 0 12px;
     }}
+    .cover-site {{
+      font-size: 13px;
+      color: var(--olive-100);
+      margin: 0 0 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.86;
+    }}
     .cover-run-ts {{
       font-size: 11px;
       color: var(--olive-200);
@@ -2035,12 +2146,17 @@ def _html_shell(
       padding: 0;
     }}
     .toc-list li {{
-      display: flex;
-      gap: 12px;
       padding: 7px 0;
       border-bottom: 1px solid var(--line);
       font-size: 12px;
     }}
+    .toc-link {{
+      display: flex;
+      gap: 12px;
+      color: inherit;
+      text-decoration: none;
+    }}
+    .toc-link:hover span:last-child {{ color: var(--olive-700); text-decoration: underline; }}
     .toc-num {{
       font-family: "Playfair Display", Georgia, "Times New Roman", serif;
       font-size: 14px;
@@ -2126,6 +2242,27 @@ def _html_shell(
     .health-card--warn .health-card-stat {{ color: #b45309; }}
     .health-card--good .health-card-stat {{ color: #15803d; }}
     .health-card-detail {{ font-size: 9px; color: var(--muted); margin-top: 3px; }}
+    .wide-section {{ page: wide-page; page-break-before: always; }}
+    .wide-section table {{ font-size: 8.5px; }}
+    .wide-section th, .wide-section td {{ padding: 3px 4px; }}
+    .end-report {{
+      page-break-before: always;
+      min-height: 220mm;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }}
+    .end-report-inner {{
+      border-top: 2px solid var(--olive-400);
+      border-bottom: 2px solid var(--olive-400);
+      padding: 32px 80px;
+    }}
+    .end-report h2 {{
+      border: 0;
+      margin: 0 0 12px;
+      font-size: 28px;
+    }}
     section {{ page-break-inside: auto; }}
   </style>
 </head>
@@ -2136,6 +2273,7 @@ def _html_shell(
         <div class="cover-brand">Techmore</div>
         <div class="cover-rule"></div>
         <h1 class="cover-title">{html.escape(report_title)}</h1>
+        <p class="cover-site">{html.escape(scope_label)}</p>
         <p class="cover-subtitle">{html.escape(report_subtitle)}</p>
         <p class="cover-run-ts">Collected: {html.escape(str(collected))}</p>
       </div>
@@ -2152,6 +2290,7 @@ def _html_shell(
     </ol>
   </section>
   {body}
+  {end_report}
 </body>
 </html>"""
 

@@ -168,6 +168,9 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     exec_html = Path(paths["exec_html"]).read_text(encoding="utf-8")
     backup_html = Path(paths["backup_html"]).read_text(encoding="utf-8")
     assert "TM UniFi Baseline" in html
+    assert 'class="cover-site">Main</p>' in html
+    assert 'href="#1-executive-summary"' in html
+    assert 'id="1-executive-summary"' in html
     assert "U7-Pro-1" in html
     assert "IW HD" in html
     assert "USW-48" in html
@@ -224,6 +227,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "10.100.0.10 - 10.100.0.250" in html
     assert "10.100.0.0/24" in html
     assert "Staff (VLAN 100)" in html
+    assert "U7-Pro-1 (U7-Pro): 1" in html
     assert "not an authoritative DHCP lease export" in html
     assert "0 / 2 available" in html
     assert "captured empty" in html
@@ -239,6 +243,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Network Services Backup" in backup_html
     assert "Hardware Refresh &amp; Budget Planning" not in backup_html
     assert "Connected Clients" not in backup_html
+    assert "End of Report" in backup_html
 
 
 def test_unifi_profiles_discovers_numbered_site_profiles(monkeypatch):
