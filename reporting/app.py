@@ -3313,9 +3313,12 @@ def build_org_report(
     max_ups_load = float(ups_summary.get("maxSizingLoadWatts") or 0)
     bx_max = bx_ref.get("max_watts") if isinstance(bx_ref, dict) else None
     smx_max = smx_ref.get("max_watts") if isinstance(smx_ref, dict) else None
+    bx_unit = bx_ref.get("unit_cost") if isinstance(bx_ref, dict) else None
     smx_unit = smx_ref.get("unit_cost") if isinstance(smx_ref, dict) else None
     smx_ext = smx_ref.get("external_battery_unit_cost") if isinstance(smx_ref, dict) else None
+    smx_ext_sku = str(smx_ref.get("external_battery_sku") or "SMX120RMBP2U") if isinstance(smx_ref, dict) else "SMX120RMBP2U"
     ups_switch_items = ups_power_plan.get("switches", []) if isinstance(ups_power_plan.get("switches"), list) else []
+    ups_switch_count = len(ups_switch_items)
     target_stacks = [
         ((item.get("runtimeEstimates") or {}).get("SMX2200RMLV2UTargetStack") or {})
         for item in ups_switch_items
@@ -3330,6 +3333,11 @@ def build_org_report(
     max_external_batteries = max(
         [int(stack.get("externalBatteryCount") or 0) for stack in target_stacks if stack.get("externalBatteryCount") is not None],
         default=0,
+    )
+    target_external_battery_count = sum(
+        int(stack.get("externalBatteryCount") or 0)
+        for stack in target_stacks
+        if stack.get("externalBatteryCount") is not None
     )
     no_target_stack_count = sum(1 for stack in target_stacks if stack.get("runtimeMinutes") is None)
     bx_runtime_minutes = [
@@ -3387,6 +3395,41 @@ def build_org_report(
         if smx_base_runtime_minutes
         else "not available"
     )
+    bx_total = bx_unit * ups_switch_count if isinstance(bx_unit, (int, float)) else None
+    smx_base_total = smx_unit * ups_switch_count if isinstance(smx_unit, (int, float)) else None
+    smx_external_total = (
+        smx_ext * target_external_battery_count
+        if isinstance(smx_ext, (int, float))
+        else None
+    )
+    smx_target_total = (
+        smx_base_total + smx_external_total
+        if isinstance(smx_base_total, (int, float)) and isinstance(smx_external_total, (int, float))
+        else total_target_cost
+    )
+    ups_offering_rows = [
+        [
+            "Short-runtime tower fallback",
+            f"{ups_switch_count} x BX1500M",
+            f"{_format_money(bx_unit)} / unit",
+            _format_money(bx_total),
+            f"{bx_window}; useful for graceful shutdown or brief outages, not the {ups_target_hours:g}h closet target.",
+        ],
+        [
+            "Base rack/tower Smart-UPS",
+            f"{ups_switch_count} x SMX2200RMLV2U",
+            f"{_format_money(smx_unit)} / unit",
+            _format_money(smx_base_total),
+            f"{smx_base_window}; below the {ups_target_hours:g}h target for {smx_base_below_target_count} modeled switch load(s).",
+        ],
+        [
+            f"Target-runtime Smart-UPS stack ({ups_target_hours:g}h planning)",
+            f"{ups_switch_count} x SMX2200RMLV2U + {target_external_battery_count} x {smx_ext_sku}",
+            f"{_format_money(smx_unit)} UPS; {_format_money(smx_ext)} battery",
+            _format_money(smx_target_total),
+            f"Recommended planning bundle from the per-switch runtime table; largest individual stack uses {max_external_batteries} external battery module(s).",
+        ],
+    ]
     ups_source_links = ""
     if isinstance(ups_meta, dict) and isinstance(ups_meta.get("sources"), list):
         links = []
@@ -3424,6 +3467,11 @@ def build_org_report(
           <div class="kpi-note">Smart-UPS external battery stack</div>
         </div>
       </div>
+      {render_section(
+        "UPS Offering Price Summary",
+        ups_offering_rows,
+        headers=["Offering", "Procurement Quantity", "Reference Unit Price", "Estimated Equipment Cost", "Planning Read"],
+      ) if ups_rows else ""}
       <div class="summary-card">
         <div class="summary-title">Executive Recommendation</div>
         <div class="summary-body">

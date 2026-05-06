@@ -250,6 +250,11 @@ class TestBuildOrgReport:
         assert "1 UPS + 1 external battery module" in html
         assert "Executive Recommendation" in html
         assert "Use the Smart-UPS X stack as the planning standard" in html
+        assert "UPS Offering Price Summary" in html
+        assert "3 x BX1500M" in html
+        assert "$219.99 / unit" in html
+        assert "3 x SMX2200RMLV2U" in html
+        assert "SMX120RMBP2U" in html
 
         battery_html = build_org_report(str(tmp_path), "UPS Test", report_kind="battery_backup")
         assert "Battery Backup Runtime Planning" in battery_html
@@ -257,6 +262,7 @@ class TestBuildOrgReport:
         assert "Core-SW-1 (Q2SW-TEST-0001)" in battery_html
         assert "97.5 W" in battery_html
         assert "Executive Recommendation" in battery_html
+        assert "UPS Offering Price Summary" in battery_html
         assert "Executive Summary" not in battery_html
         assert "$3,487.04" in html
 

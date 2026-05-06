@@ -25,6 +25,10 @@
       {
         "title": "APCGuard BX1500M runtime chart reference",
         "url": "https://www.apcguard.com/BR1500MS.asp"
+      },
+      {
+        "title": "OMNIA/NCPA price list reference for BX1500M",
+        "url": "https://www.omniapartners.com/suppliers-files/A-D/D_H_Distributing/Contract_Documents/01-168/2-Copy_of_NCPA_Price_List_Nov_23__1_.pdf"
       }
     ]
   },
@@ -58,8 +62,8 @@
       "sku": "BX1500M",
       "max_watts": 900,
       "max_va": 1500,
-      "unit_cost": null,
-      "cost_note": "Unit cost not provided in the current planning prompt.",
+      "unit_cost": 219.99,
+      "cost_note": "Planning unit cost from public OMNIA/NCPA price-list reference; validate current seller pricing before procurement.",
       "configuration_label": "1 tower UPS",
       "runtime_points_minutes": [
         {"watts": 50, "minutes": 134},
