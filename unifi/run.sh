@@ -12,6 +12,8 @@ usage() {
   echo "      --site-id <id>   Limit local Network Application collection to one site ID"
   echo "      --console-id <id>"
   echo "                       Use api.ui.com remote connector for this console ID"
+  echo "      --all-sites     Run every UNIFI_SITE<N>_* profile from unifi/.env"
+  echo "      --profile <id>  With --all-sites, run one saved profile, e.g. site1"
   echo "      --report-only    Skip API collection; build report from unifi/backups/latest"
   echo "      --backups-dir <dir>"
   echo "                       Backup JSON directory. Default: unifi/backups/latest"
@@ -36,6 +38,8 @@ HEALTH_CHECK=0
 KEEP_HTML=0
 SITE_ID="${UNIFI_SITE_ID:-}"
 CONSOLE_ID="${UNIFI_NETWORK_CONSOLE_ID:-}"
+ALL_SITES=0
+PROFILE=""
 BACKUPS_DIR="unifi/backups/latest"
 REPORTS_DIR="unifi/reports/latest"
 
@@ -60,6 +64,20 @@ while [[ $# -gt 0 ]]; do
     --console-id)
       CONSOLE_ID="${2:-}"
       if [[ -z "$CONSOLE_ID" || "$CONSOLE_ID" == --* ]]; then
+        echo "Missing value for $1" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --all-sites)
+      ALL_SITES=1
+      BACKUPS_DIR="unifi/backups/sites"
+      REPORTS_DIR="unifi/reports/sites"
+      shift
+      ;;
+    --profile)
+      PROFILE="${2:-}"
+      if [[ -z "$PROFILE" || "$PROFILE" == --* ]]; then
         echo "Missing value for $1" >&2
         exit 2
       fi
@@ -132,6 +150,21 @@ echo "UniFi Network Report Suite"
 echo "Mode: $MODE"
 echo "Backups: $BACKUPS_DIR"
 echo "Reports: $REPORTS_DIR"
+
+if (( ALL_SITES == 1 )); then
+  multi_args=(--mode network --backups-dir "$BACKUPS_DIR" --reports-dir "$REPORTS_DIR")
+  if [[ -n "$PROFILE" ]]; then
+    multi_args+=(--profile "$PROFILE")
+  fi
+  if (( REPORT_ONLY == 1 )); then
+    multi_args+=(--report-only)
+  fi
+  if (( KEEP_HTML == 0 )); then
+    multi_args+=(--pdf-only)
+  fi
+  "$PYTHON_BIN" -m unifi.run_sites "${multi_args[@]}"
+  exit $?
+fi
 
 if (( HEALTH_CHECK == 1 )); then
   health_args=(--backups-dir "$BACKUPS_DIR")

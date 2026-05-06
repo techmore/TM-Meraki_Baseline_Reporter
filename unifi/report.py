@@ -90,6 +90,23 @@ def _read_site_file(source: Path, site_summary: Dict[str, Any], key: str) -> Lis
     return _items(_load_json(source / rel, [])) if rel else []
 
 
+def _auth_guidance(sm: Dict[str, Any], net: Dict[str, Any]) -> List[str]:
+    guidance: List[str] = []
+    for error in list(sm.get("errors") or []) + list(net.get("errors") or []):
+        if not isinstance(error, dict) or error.get("status") not in {401, 403}:
+            continue
+        label = str(error.get("label") or "")
+        if label == "network_sites" and net.get("connectionType") == "remote":
+            guidance.append(
+                "Remote connector returned authorization failure. Use a cloud/account API key with console access, or switch this profile to local Network Integration collection with UNIFI_NETWORK_BASE_URL."
+            )
+        elif label == "network_sites":
+            guidance.append("Local Network Integration API returned authorization failure. Confirm the key was created in this UniFi Network application and has read access.")
+        elif label == "site_manager_sites":
+            guidance.append("Site Manager returned authorization failure. Use a Site Manager/API key from the UniFi account API area, not a local Network Integration key.")
+    return sorted(set(guidance))
+
+
 def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     source = Path(source_dir)
     output = Path(output_dir)
@@ -146,6 +163,10 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     error_rows = [[e.get("label", ""), e.get("status", ""), e.get("path", ""), e.get("error", "")[:180]] for e in errors]
     sections.append("<h3>Endpoint Gaps / Errors</h3>")
     sections.append(_table(["Endpoint", "Status", "Path", "Error"], error_rows, "No endpoint errors captured."))
+    auth_guidance = _auth_guidance(sm, net)
+    if auth_guidance:
+        sections.append("<h3>Credential / Access Fix</h3>")
+        sections.append("<ul>" + "".join(f"<li>{html.escape(item)}</li>" for item in auth_guidance) + "</ul>")
     sections.append("</section>")
 
     sections.append("<section><h2>Device Inventory</h2>")
@@ -322,4 +343,3 @@ def main(argv: List[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
