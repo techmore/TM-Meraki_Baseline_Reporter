@@ -76,6 +76,8 @@ __pypackages__/
 
 backups/
 reports/
+unifi/backups/
+unifi/reports/
 meraki_backup_*/
 meraki_backup_sample_*/
 */report.pdf

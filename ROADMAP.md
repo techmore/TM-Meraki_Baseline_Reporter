@@ -98,6 +98,17 @@ This project is currently functional as a Python reporting pipeline. The immedia
 - If desired later, add a minimal `package.json` as a command wrapper only.
 - Keep Python as the source of truth for Meraki collection, report generation, and tests.
 
+## Phase 6: UniFi / Ubiquiti Reporting - Started
+
+- Add a separate `./unifi/run.sh` runner so UniFi work does not regress the
+  Meraki pipeline.
+- Support both official Site Manager API collection and local UniFi Network
+  Application Integration API collection.
+- Save raw UniFi JSON backups separately under `unifi/backups/`.
+- Generate a first-pass UniFi baseline report under `unifi/reports/`.
+- Treat local Network Application endpoint gaps as reportable coverage findings
+  while we learn the exact controller version and API surface.
+
 ## Release Checklist
 
 - Run `./install.sh`.
