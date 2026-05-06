@@ -76,3 +76,5 @@ When `--all-sites` is used, outputs are separated by saved profile:
 
 - `unifi/backups/sites/site1/`
 - `unifi/reports/sites/site1/`
+- `unifi/reports/sites/site_run_manifest.json`
+- `unifi/reports/sites/index.html`

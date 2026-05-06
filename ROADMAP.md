@@ -110,6 +110,7 @@ This project is currently functional as a Python reporting pipeline. The immedia
   findings while we learn the exact controller version and API surface.~~
 - ~~Add saved site profiles in `unifi/.env` and `./unifi/run.sh --all-sites`
   for multi-site runs.~~
+- ~~Write a top-level UniFi multi-site report index for saved profile runs.~~
 - ~~Write UniFi report inventory data and a static `index.html` for generated
   outputs.~~
 - ~~Improve UniFi executive summary language once more live sites are captured.~~
