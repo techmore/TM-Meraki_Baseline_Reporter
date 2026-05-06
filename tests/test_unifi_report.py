@@ -121,6 +121,14 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "NATIVE" in html
     assert "Firewall Zones" in html
     assert "Recommended Follow-Up" in html
+    assert "Current State Assessment" in html
+    assert "Top Operational Risks" in html
+    assert "Recommended Priorities" in html
+    assert "Data Confidence Snapshot" in html
+    assert "Health at a Glance" in html
+    assert "How to Use This Report" in html
+    assert "Security Baseline" in html
+    assert "Port and radio diagnostics are low-confidence" in html
     assert "By Model" in html
     assert "Client Load by Uplink" in html
     assert "Firewall Policy Summary" in html
