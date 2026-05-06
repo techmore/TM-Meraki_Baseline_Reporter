@@ -222,6 +222,7 @@ def collect_network_application(output: Path, selected_site_id: str = "", consol
 
 
 def main(argv: List[str] | None = None) -> int:
+    load_env()
     parser = argparse.ArgumentParser(description="Collect UniFi Site Manager and Network Application data.")
     parser.add_argument("--mode", choices=["auto", "site-manager", "network", "both"], default=os.getenv("UNIFI_COLLECTION_MODE", "auto"))
     parser.add_argument("--site-id", default=os.getenv("UNIFI_SITE_ID", ""))
@@ -229,7 +230,6 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--output-dir", default=str(ROOT / "unifi" / "backups" / "latest"))
     args = parser.parse_args(argv)
 
-    load_env()
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
