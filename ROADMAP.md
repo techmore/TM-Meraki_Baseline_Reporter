@@ -18,7 +18,8 @@ This project is currently functional as a Python reporting pipeline. The immedia
 - Deterministic report generation is available with `./run.sh --fixed-now ...`,
   `python -m reporting --fixed-now ...`, or `MERAKI_REPORT_FIXED_NOW`.
 - `./run.sh` remains the full default pipeline and now validates the generated latest
-  report deliverables after report generation, including a latest report manifest.
+  report deliverables after report generation, including a latest report manifest
+  and static HTML index.
 
 ## Phase 1: Stabilize The Existing Python App - Complete
 
@@ -89,6 +90,7 @@ This project is currently functional as a Python reporting pipeline. The immedia
 - ~~Add PDF-only output mode so routine runs do not retain generated HTML unless requested.~~
 - ~~Add a final report inventory check so missing generated deliverables fail the run visibly.~~
 - ~~Write `reports/latest/report_inventory.json` so the generated report set can be audited without browsing folders.~~
+- ~~Write `reports/latest/index.html` as a static report index with links to each latest deliverable.~~
 
 ## Phase 5: Optional Interfaces
 

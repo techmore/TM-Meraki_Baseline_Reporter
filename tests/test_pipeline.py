@@ -279,6 +279,7 @@ class TestReportInventory:
         assert "Battery backup" in output
         assert "UPS switch power plan" in output
         assert "Manifest:" in output
+        assert "Index:" in output
 
         manifest = json.loads((tmp_path / "reports" / "latest" / "report_inventory.json").read_text(encoding="utf-8"))
         assert manifest["status"] == "ok"
@@ -288,6 +289,10 @@ class TestReportInventory:
         assert manifest["orgs"][0]["deliverables"][0]["namedPath"].endswith(
             "Demo_Org_Complete_Report_2026-05-02.pdf"
         )
+        index = (tmp_path / "reports" / "latest" / "index.html").read_text(encoding="utf-8")
+        assert "TM Meraki Report Inventory" in index
+        assert 'href="Demo_Org/report.pdf"' in index
+        assert "Demo_Org_Complete_Report_2026-05-02.pdf" in index
 
     def test_inventory_fails_when_expected_report_is_missing(self, tmp_path, capsys):
         org_dir = tmp_path / "reports" / "latest" / "Demo_Org"
@@ -308,6 +313,9 @@ class TestReportInventory:
             if item["label"] == "AP spectrum"
         ][0]
         assert ap_spectrum["present"] is False
+        index = (tmp_path / "reports" / "latest" / "index.html").read_text(encoding="utf-8")
+        assert "Missing deliverables" in index
+        assert '<span class="status missing">Missing</span>' in index
 
 
 class TestReportingEntrypoint:
