@@ -194,6 +194,11 @@
       "sixGhzCapable": true,
       "bands": ["2.4", "5", "6"],
       "spatialStreams": 12,
+      "rfProfilePlanning": {
+        "defaultMaxPowerDbm": 26,
+        "bandMaxPowerDbm": {"2.4": 26, "5": 26, "6": 26},
+        "basis": "CW9176I/CW9176D1 datasheet RF performance tables; validate local regulatory domain and site survey"
+      },
       "source": "Cisco AP Capabilities / CW9176I Datasheet"
     },
     "CW9176D1": {
@@ -203,6 +208,11 @@
       "sixGhzCapable": true,
       "bands": ["2.4", "5", "6"],
       "spatialStreams": 12,
+      "rfProfilePlanning": {
+        "defaultMaxPowerDbm": 26,
+        "bandMaxPowerDbm": {"2.4": 26, "5": 26, "6": 26},
+        "basis": "CW9176I/CW9176D1 datasheet RF performance tables; validate local regulatory domain and site survey"
+      },
       "source": "Cisco AP Capabilities / CW9176I Datasheet"
     },
     "CW9163E": {
@@ -228,6 +238,11 @@
       "sixGhzCapable": false,
       "bands": ["2.4", "5"],
       "spatialStreams": 8,
+      "rfProfilePlanning": {
+        "defaultMaxPowerDbm": 26,
+        "bandMaxPowerDbm": {"2.4": 26, "5": 26},
+        "basis": "MR86 datasheet RF performance tables; validate local regulatory domain and site survey"
+      },
       "source": "Cisco AP Capabilities / MR86 Datasheet"
     },
     "MR46": {
@@ -237,6 +252,11 @@
       "sixGhzCapable": false,
       "bands": ["2.4", "5"],
       "spatialStreams": 8,
+      "rfProfilePlanning": {
+        "defaultMaxPowerDbm": 26,
+        "bandMaxPowerDbm": {"2.4": 26, "5": 26},
+        "basis": "MR46 datasheet RF performance tables; validate local regulatory domain and site survey"
+      },
       "source": "Cisco AP Capabilities / MR46 Datasheet"
     },
     "MR44": {

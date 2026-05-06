@@ -1058,6 +1058,26 @@ def _build_ap_spectrum_report(
         suffix = f"; {', '.join(details)}" if details else ""
         return f"Current RF profile: {name} ({source}); {min_text}; {max_text}{cap_note}{suffix}"
 
+    def _profile_power_values(ap: Dict[str, Any], band: str) -> Tuple[float | None, float | None]:
+        band_map = {
+            "2.4": "twoFourGhzSettings",
+            "5": "fiveGhzSettings",
+            "6": "sixGhzSettings",
+        }
+        profile, _, _ = _assigned_profile(ap)
+        if not isinstance(profile, dict):
+            return None, None
+        field = band_map.get(str(band))
+        settings = profile.get(field) if field else None
+        if not isinstance(settings, dict):
+            return None, None
+        min_power = settings.get("minPower")
+        max_power = settings.get("maxPower")
+        return (
+            float(min_power) if isinstance(min_power, (int, float)) else None,
+            float(max_power) if isinstance(max_power, (int, float)) else None,
+        )
+
     def _power_context(ap: Dict[str, Any], band: str) -> str:
         net_id = ap["network_id"]
         profile, exact, profile_name = _assigned_profile(ap)
@@ -1112,6 +1132,46 @@ def _build_ap_spectrum_report(
         if names:
             profile_note += f": {', '.join(names[:2])}{'…' if len(names) > 2 else ''}"
         return f"RF profile range; {min_text}; {max_text}{cap_note}{profile_note}"
+
+    def _model_power_target(ap: Dict[str, Any], band: str) -> str:
+        model = str(ap.get("model") or "")
+        ref = catalog_models.get(model) if isinstance(catalog_models, dict) else None
+        rf_target = ref.get("rfProfilePlanning") if isinstance(ref, dict) and isinstance(ref.get("rfProfilePlanning"), dict) else {}
+        band_targets = rf_target.get("bandMaxPowerDbm") if isinstance(rf_target.get("bandMaxPowerDbm"), dict) else {}
+        target = band_targets.get(str(band)) or rf_target.get("defaultMaxPowerDbm")
+        basis = str(rf_target.get("basis") or ref.get("source") or "model catalog") if isinstance(ref, dict) else "model catalog"
+        if isinstance(target, (int, float)):
+            return f"model planning ceiling {float(target):.0f} dBm ({basis})"
+        return "model-specific RF ceiling not in local catalog; use Meraki Auto RF with a site-survey-validated ceiling"
+
+    def _legacy_or_old_standard(ap: Dict[str, Any]) -> bool:
+        cap = _ap_capability(ap)
+        model = str(ap.get("model") or "").upper()
+        if cap["generation"] in {"Wi-Fi 5", "Wi-Fi 5-era", "Legacy"}:
+            return True
+        return model.startswith(("MR16", "MR18", "MR20", "MR24", "MR26", "MR30H", "MR32", "MR33", "MR34", "MR42", "MR52", "MR53", "MR66", "MR70", "MR72", "MR74", "MR84"))
+
+    def _low_power_value_note(ap: Dict[str, Any], band: str) -> str:
+        cap = _ap_capability(ap)
+        _, max_power = _profile_power_values(ap, band)
+        target = _model_power_target(ap, band)
+        if _legacy_or_old_standard(ap):
+            return (
+                "This is an older-standard/EOL-candidate AP, so do not spend project time trying to recover value "
+                "by increasing transmit power. Prioritize removal, replacement, or decommissioning, then retest the RF domain."
+            )
+        if cap["generation"] in {"Wi-Fi 7", "Wi-Fi 6E", "Wi-Fi 6"} and isinstance(max_power, (int, float)) and max_power <= 17:
+            return (
+                "This modern AP is constrained by a low RF profile ceiling. Do not lower it further just because overlap is visible. "
+                f"To get value from the hardware, raise the profile ceiling toward the AP capability/Auto RF target ({target}), "
+                "then retest; if overlap remains, relocate/remove a redundant nearby AP rather than keeping this unit underpowered."
+            )
+        if cap["generation"] in {"Wi-Fi 7", "Wi-Fi 6E", "Wi-Fi 6"}:
+            return (
+                f"Treat this as a value-recovery check for a current-generation AP: keep Auto RF enabled with enough ceiling to use the hardware ({target}) "
+                "and solve confirmed overlap with placement/channel reuse instead of blanket power reduction."
+            )
+        return "Validate RF profile power against Meraki Auto RF and a floor-plan survey before changing hardware or power settings."
 
     def _profile_name(ap: Dict[str, Any]) -> str:
         _, exact, name = _assigned_profile(ap)
@@ -1211,7 +1271,11 @@ def _build_ap_spectrum_report(
         if cap["generation"] in {"Wi-Fi 7", "Wi-Fi 6E", "Wi-Fi 6"} and severity["rank"] >= 4:
             points.append(f"Current {severity['label'].lower()} interference means the organization may not feel the value of this {cap['generation']} AP until RF is remediated.")
         if not cap["sixGhzCapable"] and cap["generation"] in {"Wi-Fi 5", "Wi-Fi 5-era", "Legacy", "Unknown"} and severity["rank"] >= 4:
-            points.append("Do not spend refresh money until RF noise/overlap is corrected; replacement hardware would inherit the same spectrum problem.")
+            points.append("Older-standard or EOL-candidate AP; prioritize replacement/removal instead of trying to tune more life out of it.")
+        if cap["generation"] in {"Wi-Fi 7", "Wi-Fi 6E", "Wi-Fi 6"}:
+            _, max_power = _profile_power_values(ap, ap.get("worst_band") or "")
+            if isinstance(max_power, (int, float)) and max_power <= 17:
+                points.append("Modern AP under low RF ceiling; recover value by allowing Auto RF more usable transmit-power headroom before deciding the AP is a bad fit.")
         if not points:
             points.append("No obvious hardware value blocker from this telemetry window.")
         if not profile_ctx["exact"]:
@@ -1391,7 +1455,7 @@ def _build_ap_spectrum_report(
         )
     if high_pressure:
         executive_points.append(
-            f"Validate floor plans for {len(high_pressure)} AP(s) showing excessive co-channel pressure; removal, relocation, or lower transmit power may help more than adding hardware."
+            f"Validate floor plans for {len(high_pressure)} AP(s) showing excessive co-channel pressure. For modern APs on low power, first restore enough Auto RF headroom to get value from the hardware; for older/EOL APs, prioritize removal or replacement."
         )
     if six_ghz_value_blocked:
         executive_points.append(
@@ -1518,17 +1582,33 @@ def _build_ap_spectrum_report(
                 + power
             )
         if "WAY TOO CLOSE" in ap["bubble"]:
+            if _legacy_or_old_standard(ap):
+                return (
+                    "Treat this as a high-priority RF density and lifecycle problem. If the floor plan confirms another AP is physically close, remove or replace this older/EOL-candidate unit before adding more hardware. "
+                    + power
+                )
+            cap = _ap_capability(ap)
+            if cap["generation"] in {"Wi-Fi 7", "Wi-Fi 6E", "Wi-Fi 6"}:
+                return (
+                    "Treat this as a high-priority RF density problem. Because this is a current-generation AP class, do not solve cost/value concerns by underpowering it further. "
+                    + _low_power_value_note(ap, ap["worst_band"])
+                    + " "
+                    + power
+                )
             return (
-                "Treat this as a high-priority RF density problem. If the floor plan confirms "
-                "another AP is physically close, remove, disable, or relocate one AP before "
-                "adding replacement Wi-Fi 6/7 hardware. "
+                "Treat this as a high-priority RF density problem. Validate the model lifecycle before changing transmit power; if overlap is confirmed, prioritize placement or replacement over blanket power reduction. "
                 + power
             )
         if "Too close" in ap["bubble"]:
+            if _legacy_or_old_standard(ap):
+                return (
+                    "Review nearby AP placement and channel reuse, but treat this older/EOL-candidate AP as a replacement/removal candidate rather than spending time optimizing low-value hardware. "
+                    + power
+                )
             return (
-                "Review nearby AP placement, channel reuse, and transmit power. If this AP is already "
-                "running under a reduced power profile, removal or relocation is more likely to help "
-                "than increasing power. "
+                "Review nearby AP placement and channel reuse. If this AP is already running under a reduced power profile, do not lower it further; recover hardware value first, then remove/relocate redundant APs if overlap persists. "
+                + _low_power_value_note(ap, ap["worst_band"])
+                + " "
                 + power
             )
         if stats.get("non_wifi", 0.0) >= 15:
@@ -1574,11 +1654,11 @@ def _build_ap_spectrum_report(
         if stats.get("non_wifi", 0.0) >= 25:
             return "Find/remove RF noise source; retest before AP replacement. " + value + " " + power
         if "WAY TOO CLOSE" in ap["bubble"]:
-            return "Validate floor plan; remove, disable, or relocate one AP if physical overlap is confirmed. " + value + " " + power
+            return "Validate floor plan; for modern APs recover value by restoring Auto RF headroom, and for old/EOL units remove or replace the low-value AP if physical overlap is confirmed. " + value + " " + _low_power_value_note(ap, ap["worst_band"]) + " " + power
         if "Too close" in ap["bubble"]:
-            return "Tune channel reuse and power; consider relocation/removal if profile is already constrained. " + value + " " + power
+            return "Tune channel reuse and placement; do not recommend lower power when a modern AP is already constrained. " + value + " " + _low_power_value_note(ap, ap["worst_band"]) + " " + power
         if "Tight" in ap["bubble"]:
-            return "Tune profile/channel width before one-for-one refresh. " + value + " " + power
+            return "Tune profile/channel width before one-for-one refresh; for modern low-power APs restore value with Auto RF headroom before removal decisions. " + value + " " + _low_power_value_note(ap, ap["worst_band"]) + " " + power
         return "Monitor; no immediate RF remediation from this telemetry."
 
     severity_queue = sorted(

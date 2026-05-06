@@ -939,12 +939,88 @@ class TestBuildOrgReport:
         assert "WAY TOO CLOSE / saturated RF bubble" in html
         assert "Same-Band Context / Overlap Candidates" in html
         assert "Current RF profile: Classroom Low Power (exact AP assignment)" in html
-        assert "remove, disable, or relocate one AP" in html
+        assert "recover value by restoring Auto RF headroom" in html
+        assert "Do not lower it further just because overlap is visible" in html
+        assert "model planning ceiling 26 dBm" in html
+        assert "removal, relocation, or lower transmit power may help" not in html
         assert "Interference Severity Queue" in html
         assert "RF / Hardware Fit" in html
         assert "Wi-Fi 6 / 802.11ax / 2.4, 5 GHz" in html
         assert "Current severe interference means the organization may not feel the value of this Wi-Fi 6 AP until RF is remediated" in html
         assert "Network Overview" not in html
+
+    def test_ap_spectrum_recommends_replacing_old_standard_aps_instead_of_power_tuning(self, tmp_path):
+        from reporting.app import build_org_report
+
+        for fn in os.listdir(FIXTURES):
+            src = os.path.join(FIXTURES, fn)
+            dst = tmp_path / fn
+            if os.path.isfile(src):
+                shutil.copy(src, dst)
+
+        devices = json.loads((tmp_path / "devices_availabilities.json").read_text(encoding="utf-8"))
+        devices.append(
+            {
+                "serial": "Q2AP-OLD-0001",
+                "name": "Legacy-AP-01",
+                "productType": "wireless",
+                "model": "MR42",
+                "status": "online",
+                "networkId": "N_test_001",
+            }
+        )
+        (tmp_path / "devices_availabilities.json").write_text(json.dumps(devices), encoding="utf-8")
+
+        (tmp_path / "channel_utilization_by_device.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "serial": "Q2AP-OLD-0001",
+                        "network": {"id": "N_test_001"},
+                        "byBand": [
+                            {
+                                "band": "5",
+                                "wifi": {"percentage": 66},
+                                "nonWifi": {"percentage": 1},
+                                "total": {"percentage": 82},
+                            }
+                        ],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "wireless_rf_profiles.json").write_text(
+            json.dumps(
+                {
+                    "N_test_001": [
+                        {
+                            "id": "rf-low",
+                            "name": "Low Legacy Power",
+                            "fiveGhzSettings": {"minPower": 8, "maxPower": 14},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "wireless_rf_profile_assignments.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "serial": "Q2AP-OLD-0001",
+                        "rfProfile": {"id": "rf-low", "name": "Low Legacy Power"},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        html = build_org_report(str(tmp_path), "AP Legacy Test", report_kind="ap_spectrum")
+        assert "Wi-Fi 5 / 802.11ac Wave 2 / 2.4, 5 GHz" in html
+        assert "older-standard/EOL-candidate AP" in html
+        assert "Prioritize removal, replacement, or decommissioning" in html
+        assert "trying to recover value by increasing transmit power" in html
 
     def test_ap_spectrum_surfaces_channel_utilization_collection_error(self, tmp_path):
         from reporting.app import build_org_report
