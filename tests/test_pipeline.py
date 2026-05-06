@@ -7,6 +7,7 @@ import pytest
 
 import merge_recommendations as mr
 import ollama_review as orv
+from reporting import report_inventory
 from reporting import health
 
 
@@ -249,6 +250,44 @@ class TestHealthChecks:
         by_name = {check.name: check for check in checks}
         assert by_name["MERAKI_API_KEY"].status == "skip"
         assert by_name["Org backups"].status == "ok"
+
+
+class TestReportInventory:
+    def _write_expected_deliverables(self, org_dir: Path) -> None:
+        org_dir.mkdir(parents=True)
+        aliases = {
+            "report.pdf": "Demo_Org_Complete_Report_2026-05-02.pdf",
+            "report_exec_summary.pdf": "Demo_Org_Executive_Summary_Report_2026-05-02.pdf",
+            "report_backup_settings.pdf": "Demo_Org_Backup_Settings_Report_2026-05-02.pdf",
+            "report_battery_backup.pdf": "Demo_Org_Battery_Backup_Pricing_Calculation_Report_2026-05-02.pdf",
+            "report_ap_spectrum.pdf": "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf",
+            "ups_switch_power_plan.json": "Demo_Org_UPS_Switch_Power_Plan_Report_2026-05-02.json",
+        }
+        for compat, named in aliases.items():
+            (org_dir / compat).write_text("payload", encoding="utf-8")
+            (org_dir / named).write_text("payload", encoding="utf-8")
+
+    def test_inventory_accepts_complete_latest_report_set(self, tmp_path, capsys):
+        org_dir = tmp_path / "reports" / "latest" / "Demo_Org"
+        self._write_expected_deliverables(org_dir)
+
+        assert report_inventory.main(["--reports-dir", str(tmp_path / "reports")]) == 0
+
+        output = capsys.readouterr().out
+        assert "Demo_Org: 6/6 expected deliverables" in output
+        assert "Battery backup" in output
+        assert "UPS switch power plan" in output
+
+    def test_inventory_fails_when_expected_report_is_missing(self, tmp_path, capsys):
+        org_dir = tmp_path / "reports" / "latest" / "Demo_Org"
+        self._write_expected_deliverables(org_dir)
+        (org_dir / "report_ap_spectrum.pdf").unlink()
+
+        assert report_inventory.main(["--reports-dir", str(tmp_path / "reports")]) == 1
+
+        output = capsys.readouterr().out
+        assert "Demo_Org: 5/6 expected deliverables" in output
+        assert "MISSING  AP spectrum" in output
 
 
 class TestReportingEntrypoint:

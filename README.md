@@ -11,6 +11,7 @@ A reporting pipeline that collects Meraki org data, generates network health and
 | `ollama_review.py` | Optional local LLM review stage |
 | `python -m reporting` | Direct report generation from existing backup data |
 | `report_generator.py` | Compatibility wrapper for report generation |
+| `report_inventory.py` | Validates the expected latest report deliverables after generation |
 | `run.sh` | Full pipeline orchestrator |
 | `legacy/` | Original MX baseline scripts (reference only) |
 | `docs/cis-meraki-reference.md` | CIS Controls to Meraki reference mapping |
@@ -70,7 +71,9 @@ ollama pull gemma4:e2b
 ## Output
 
 `./run.sh` keeps raw Meraki backup data in `backups/<org>/` and writes generated
-shareable reports to `reports/` (both gitignored):
+shareable reports to `reports/` (both gitignored). By default, `./run.sh` runs
+the full pipeline: Meraki query, backup, recommendation merge, optional AI review,
+report generation, and a final deliverable inventory check.
 
 - `recommendations.md` — per-org findings and recommendations
 - `backups/master_recommendations.md` — combined across all orgs
@@ -78,6 +81,9 @@ shareable reports to `reports/` (both gitignored):
 - `reports/<org>/<timestamp>/SITE_NAME_Complete_Report_YYYY-MM-DD.pdf` — run-specific full report
 - `reports/<org>/<timestamp>/SITE_NAME_Executive_Summary_Report_YYYY-MM-DD.pdf` — run-specific executive summary
 - `reports/<org>/<timestamp>/SITE_NAME_Backup_Settings_Report_YYYY-MM-DD.pdf` — run-specific backup settings report
+- `reports/<org>/<timestamp>/SITE_NAME_Battery_Backup_Pricing_Calculation_Report_YYYY-MM-DD.pdf` — run-specific UPS runtime and pricing report
+- `reports/<org>/<timestamp>/SITE_NAME_AP_Spectrum_Report_YYYY-MM-DD.pdf` — run-specific AP spectrum and interference report
+- `reports/<org>/<timestamp>/SITE_NAME_UPS_Switch_Power_Plan_Report_YYYY-MM-DD.json` — run-specific UPS sizing data
 - `reports/latest/<org>/report.pdf` — compatibility alias for the latest full report
 
 By default `run.sh` passes `--pdf-only`, so generated HTML is removed after PDFs

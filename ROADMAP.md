@@ -17,6 +17,8 @@ This project is currently functional as a Python reporting pipeline. The immedia
 - Ollama review unloads the active model after each generation pass to reduce idle RAM usage.
 - Deterministic report generation is available with `./run.sh --fixed-now ...`,
   `python -m reporting --fixed-now ...`, or `MERAKI_REPORT_FIXED_NOW`.
+- `./run.sh` remains the full default pipeline and now validates the generated latest
+  report deliverables after report generation.
 
 ## Phase 1: Stabilize The Existing Python App - Complete
 
@@ -85,6 +87,7 @@ This project is currently functional as a Python reporting pipeline. The immedia
 - ~~Replace unreliable wireless-only client collection with network-wide client collection and report wired/wireless client detail coverage.~~
 - ~~Separate generated report deliverables into `reports/` and keep `backups/` focused on raw collection data.~~
 - ~~Add PDF-only output mode so routine runs do not retain generated HTML unless requested.~~
+- ~~Add a final report inventory check so missing generated deliverables fail the run visibly.~~
 
 ## Phase 5: Optional Interfaces
 

@@ -310,6 +310,7 @@ STAGES=(
   "Merge Recommendations|merge_recommendations.py"
   "AI Review (Ollama)|ollama_review.py"
   "Generate Reports|report_generator.py"
+  "Report Inventory|report_inventory.py"
 )
 TOTAL=${#STAGES[@]}
 TIMING_HISTORY_FILE="$(pwd)/backups/.stage_timings.json"
@@ -493,6 +494,9 @@ run_stage() {
     if (( KEEP_HTML == 0 )); then
       extra_args+=("--pdf-only")
     fi
+  fi
+  if [[ "$script" == "report_inventory.py" ]]; then
+    extra_args+=("--reports-dir" "$REPORTS_DIR")
   fi
 
   "$PYTHON_BIN" "$script" "${extra_args[@]+"${extra_args[@]}"}" > "$tmp" 2>&1
