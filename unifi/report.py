@@ -136,17 +136,19 @@ def _wifi_band_label(wlan: Dict[str, Any]) -> str:
 def _auth_guidance(sm: Dict[str, Any], net: Dict[str, Any]) -> List[str]:
     guidance: List[str] = []
     for error in list(sm.get("errors") or []) + list(net.get("errors") or []):
-        if not isinstance(error, dict) or error.get("status") not in {401, 403}:
+        if not isinstance(error, dict):
             continue
         label = str(error.get("label") or "")
-        if label == "network_sites" and net.get("connectionType") == "remote":
+        if error.get("status") in {401, 403} and label == "network_sites" and net.get("connectionType") == "remote":
             guidance.append(
                 "Remote connector returned authorization failure. Use a cloud/account API key with console access, or switch this profile to local Network Integration collection with UNIFI_NETWORK_BASE_URL."
             )
-        elif label == "network_sites":
+        elif error.get("status") in {401, 403} and label == "network_sites":
             guidance.append("Local Network Integration API returned authorization failure. Confirm the key was created in this UniFi Network application and has read access.")
-        elif label == "site_manager_sites":
+        elif error.get("status") in {401, 403} and label == "site_manager_sites":
             guidance.append("Site Manager returned authorization failure. Use a Site Manager/API key from the UniFi account API area, not a local Network Integration key.")
+        if error.get("status") is None and label == "network_sites":
+            guidance.append("Local UniFi console could not be reached. Verify VPN/LAN access to UNIFI_NETWORK_BASE_URL or use a cloud/account API key with remote connector access.")
     return sorted(set(guidance))
 
 

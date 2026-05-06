@@ -130,6 +130,20 @@ def _fatal_auth_errors(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
     return fatal
 
 
+def _fatal_connectivity_errors(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    fatal: List[Dict[str, Any]] = []
+    for surface in ("siteManager", "networkApplication"):
+        payload = summary.get(surface)
+        if not isinstance(payload, dict) or not payload.get("enabled"):
+            continue
+        for error in payload.get("errors") or []:
+            if not isinstance(error, dict):
+                continue
+            if error.get("label") in {"site_manager_sites", "network_sites"} and error.get("status") is None:
+                fatal.append({"surface": surface, **error})
+    return fatal
+
+
 def collect_network_application(output: Path, selected_site_id: str = "", console_id: str = "") -> Dict[str, Any]:
     api_key = os.getenv("UNIFI_NETWORK_API_KEY") or os.getenv("UNIFI_API_KEY")
     base_url = os.getenv("UNIFI_NETWORK_BASE_URL") or os.getenv("UNIFI_BASE_URL")
@@ -278,6 +292,12 @@ def main(argv: List[str] | None = None) -> int:
         print("Fatal UniFi authorization failure on required site-discovery endpoint.", file=sys.stderr)
         for err in fatal:
             print(f"- {err.get('surface')} {err.get('label')}: HTTP {err.get('status')}", file=sys.stderr)
+        return 1
+    fatal = _fatal_connectivity_errors(summary)
+    if fatal:
+        print("Fatal UniFi connectivity failure on required site-discovery endpoint.", file=sys.stderr)
+        for err in fatal:
+            print(f"- {err.get('surface')} {err.get('label')}: {err.get('error')}", file=sys.stderr)
         return 1
     return 0
 

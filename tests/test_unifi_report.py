@@ -116,3 +116,28 @@ def test_unifi_report_surfaces_remote_connector_auth_guidance(tmp_path: Path):
 
     assert "Credential / Access Fix" in html
     assert "cloud/account API key with console access" in html
+
+
+def test_unifi_report_surfaces_local_connectivity_guidance(tmp_path: Path):
+    source = tmp_path / "backup"
+    source.mkdir()
+    (source / "collection_summary.json").write_text(
+        json.dumps(
+            {
+                "metadata": {"requestedMode": "network", "effectiveMode": "network"},
+                "networkApplication": {
+                    "enabled": True,
+                    "connectionType": "local",
+                    "errors": [{"label": "network_sites", "status": None, "path": "/local", "error": "timed out"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "report"
+    paths = build_report(str(source), str(output))
+    html = Path(paths["html"]).read_text(encoding="utf-8")
+
+    assert "Credential / Access Fix" in html
+    assert "Local UniFi console could not be reached" in html
+    assert "UNIFI_NETWORK_BASE_URL" in html
