@@ -40,6 +40,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
         json.dumps(
             [
                 {"name": "U7-Pro-1", "model": "U7-Pro", "type": "access point", "state": "ONLINE", "ipAddress": "10.1.1.10"},
+                {"name": "IW HD", "model": "IW HD", "features": ["switching", "accessPoint"], "state": "ONLINE", "ipAddress": "10.1.1.11"},
                 {"name": "USW-48", "model": "USW-Pro-48-PoE", "type": "switch", "state": "ONLINE", "ipAddress": "10.1.1.20"},
             ]
         ),
@@ -47,7 +48,20 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     )
     (site_dir / "clients.json").write_text(json.dumps([{"hostname": "client-1", "ipAddress": "10.10.0.50"}]), encoding="utf-8")
     (site_dir / "networks.json").write_text(json.dumps([{"name": "Staff", "vlanId": 100, "subnet": "10.100.0.0/16", "dhcpMode": "server"}]), encoding="utf-8")
-    (site_dir / "wifi.json").write_text(json.dumps([{"name": "Staff WiFi", "enabled": True, "security": "WPA3"}]), encoding="utf-8")
+    (site_dir / "wifi.json").write_text(
+        json.dumps(
+            [
+                {
+                    "name": "Staff WiFi",
+                    "enabled": True,
+                    "securityConfiguration": {"type": "WPA3"},
+                    "network": {"type": "NATIVE"},
+                    "broadcastingFrequenciesGHz": [2.4, 5],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     (site_dir / "firewall_zones.json").write_text(json.dumps([{"name": "Internal", "id": "zone-1"}]), encoding="utf-8")
 
     output = tmp_path / "report"
@@ -56,8 +70,11 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     html = Path(paths["html"]).read_text(encoding="utf-8")
     assert "TM UniFi Baseline" in html
     assert "U7-Pro-1" in html
+    assert "IW HD" in html
     assert "USW-48" in html
     assert "Staff WiFi" in html
+    assert "WPA3" in html
+    assert "NATIVE" in html
     assert "Firewall Zones" in html
 
 

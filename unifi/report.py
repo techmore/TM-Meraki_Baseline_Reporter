@@ -46,13 +46,14 @@ def _nested(item: Dict[str, Any], path: Iterable[str], default: str = "") -> str
 
 
 def _device_role(device: Dict[str, Any]) -> str:
+    features = {str(feature).lower() for feature in device.get("features", []) if feature}
     raw = " ".join(str(device.get(k, "")) for k in ("type", "model", "modelName", "name", "displayName")).lower()
-    if any(token in raw for token in ("access point", "uap", "u7", "u6", "ap ")):
+    if "accesspoint" in features or any(token in raw for token in ("access point", "uap", "u7", "u6", "ap ", "ac pro", "iw hd")):
         return "Access Point"
-    if any(token in raw for token in ("switch", "usw")):
-        return "Switch"
     if any(token in raw for token in ("gateway", "udm", "uxg", "ucg", "router")):
         return "Gateway"
+    if "switching" in features or any(token in raw for token in ("switch", "usw")):
+        return "Switch"
     return _first(device, ("type", "productLine", "category"), "Device")
 
 
@@ -88,6 +89,48 @@ def _summary_cards(cards: List[tuple[str, Any]]) -> str:
 def _read_site_file(source: Path, site_summary: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
     rel = (site_summary.get("files") or {}).get(key)
     return _items(_load_json(source / rel, [])) if rel else []
+
+
+def _action_label(policy: Dict[str, Any]) -> str:
+    action = policy.get("action")
+    if isinstance(action, dict):
+        label = str(action.get("type") or "")
+        if action.get("allowReturnTraffic") is True:
+            label = f"{label} (return allowed)" if label else "return allowed"
+        return label
+    return str(action or "")
+
+
+def _zone_label(value: Any, zone_names: Dict[str, str]) -> str:
+    if isinstance(value, dict):
+        zone_id = str(value.get("zoneId") or "")
+        if zone_id:
+            return zone_names.get(zone_id, zone_id)
+        traffic = value.get("trafficFilter")
+        if isinstance(traffic, dict):
+            return str(traffic.get("type") or "traffic filter")
+    return str(value or "")
+
+
+def _wifi_network_label(wlan: Dict[str, Any]) -> str:
+    network = wlan.get("network")
+    if isinstance(network, dict):
+        return str(network.get("name") or network.get("id") or network.get("type") or "")
+    return _first(wlan, ("networkId", "networkName", "vlanId"))
+
+
+def _wifi_security_label(wlan: Dict[str, Any]) -> str:
+    security = wlan.get("securityConfiguration")
+    if isinstance(security, dict):
+        return str(security.get("type") or security.get("authenticationType") or "")
+    return _first(wlan, ("securityProtocol", "security", "authMode"))
+
+
+def _wifi_band_label(wlan: Dict[str, Any]) -> str:
+    bands = wlan.get("broadcastingFrequenciesGHz")
+    if isinstance(bands, list):
+        return ", ".join(str(band) for band in bands)
+    return _first(wlan, ("band", "apGroupIds"))
 
 
 def _auth_guidance(sm: Dict[str, Any], net: Dict[str, Any]) -> List[str]:
@@ -197,13 +240,13 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
         for netw in networks:
             rows.append([
                 _first(netw, ("name", "displayName")),
-                _first(netw, ("purpose", "type")),
                 _first(netw, ("vlanId", "vlan", "vlan_id")),
-                _first(netw, ("subnet", "ipSubnet", "networkGroup")),
-                _first(netw, ("gatewayIp", "gateway", "dhcpRelayServer")),
-                _first(netw, ("dhcpMode", "dhcpEnabled", "dhcpd_enabled")),
+                _first(netw, ("enabled",)),
+                _first(netw, ("default",)),
+                _first(netw, ("management",)),
+                _first(netw, ("zoneId",)),
             ])
-        sections.append(_table(["Network", "Purpose", "VLAN", "Subnet", "Gateway", "DHCP"], rows, "No network/VLAN endpoint data captured for this site."))
+        sections.append(_table(["Network", "VLAN", "Enabled", "Default", "Management", "Zone ID"], rows, "No network/VLAN endpoint data captured for this site."))
     if not site_summaries:
         sections.append("<p class='muted'>No local Network Application site detail captured yet.</p>")
     sections.append("</section>")
@@ -216,9 +259,9 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             rows.append([
                 _first(wlan, ("name", "ssid")),
                 _first(wlan, ("enabled", "isEnabled")),
-                _first(wlan, ("securityProtocol", "security", "authMode")),
-                _first(wlan, ("networkId", "networkName", "vlanId")),
-                _first(wlan, ("band", "apGroupIds")),
+                _wifi_security_label(wlan),
+                _wifi_network_label(wlan),
+                _wifi_band_label(wlan),
             ])
         sections.append(f"<h3>{html.escape(str(site.get('name') or 'Site'))}</h3>")
         sections.append(_table(["SSID", "Enabled", "Security", "Network / VLAN", "Band / AP Groups"], rows, "No WiFi endpoint data captured for this site."))
@@ -239,6 +282,8 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append("<section><h2>Firewall and Policy Backup</h2>")
     for site in site_summaries:
         sections.append(f"<h3>{html.escape(str(site.get('name') or 'Site'))}</h3>")
+        zones = _read_site_file(source, site, "firewall_zones")
+        zone_names = {str(zone.get("id")): str(zone.get("name") or zone.get("id")) for zone in zones if zone.get("id")}
         for key, label in (
             ("firewall_zones", "Firewall Zones"),
             ("firewall_policies", "Firewall Policies"),
@@ -247,9 +292,25 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             ("dns_policies", "DNS Policies"),
         ):
             data = _read_site_file(source, site, key)
-            rows = [[_first(item, ("name", "description", "id")), _first(item, ("enabled", "action", "type")), _first(item, ("id", "_id"))] for item in data[:100]]
+            if key == "firewall_policies":
+                rows = [
+                    [
+                        _first(item, ("index",)),
+                        _first(item, ("name", "description", "id")),
+                        _first(item, ("enabled",)),
+                        _action_label(item),
+                        _zone_label(item.get("source"), zone_names),
+                        _zone_label(item.get("destination"), zone_names),
+                        _first(item, ("loggingEnabled",)),
+                    ]
+                    for item in data[:120]
+                ]
+                headers = ["Order", "Name", "Enabled", "Action", "Source", "Destination", "Logging"]
+            else:
+                rows = [[_first(item, ("name", "description", "id")), _first(item, ("enabled", "action", "type")), _first(item, ("id", "_id"))] for item in data[:100]]
+                headers = ["Name", "State / Action", "ID"]
             sections.append(f"<h4>{html.escape(label)}</h4>")
-            sections.append(_table(["Name", "State / Action", "ID"], rows, f"No {label.lower()} endpoint data captured."))
+            sections.append(_table(headers, rows, f"No {label.lower()} endpoint data captured."))
     sections.append("</section>")
 
     sections.append("<section><h2>Raw Backup Files</h2>")
