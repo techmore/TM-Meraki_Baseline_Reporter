@@ -599,26 +599,66 @@ def _service_endpoint_state(items: List[Dict[str, Any]]) -> str:
 def _wan_rows(wans: List[Dict[str, Any]]) -> List[List[Any]]:
     rows: List[List[Any]] = []
     for wan in wans[:100]:
-        ip_gateway = " / ".join(
-            value
-            for value in (
-                _first(wan, ("ipAddress", "ip", "address")),
-                _first(wan, ("gateway", "gatewayIp", "gatewayAddress")),
-            )
-            if value
-        )
         rows.append(
             [
                 _first(wan, ("name", "displayName", "id")),
                 _first(wan, ("enabled", "state", "status"), "captured"),
                 _first(wan, ("type", "wanType", "purpose")),
-                _first(wan, ("addressingType", "connectionType", "ipv4ConnectionType", "mode")),
-                ip_gateway,
-                _compact_value(wan.get("dnsServers") or wan.get("dns") or wan.get("nameservers")),
+                _wan_addressing(wan),
+                _wan_ip_gateway(wan),
+                _wan_dns(wan),
                 _first(wan, ("id", "_id")),
             ]
         )
     return rows
+
+
+def _wan_addressing(wan: Dict[str, Any]) -> str:
+    return _first(wan, ("addressingType", "connectionType", "ipv4ConnectionType", "mode"))
+
+
+def _wan_ip_gateway(wan: Dict[str, Any]) -> str:
+    return " / ".join(
+        value
+        for value in (
+            _first(wan, ("ipAddress", "ip", "address")),
+            _first(wan, ("gateway", "gatewayIp", "gatewayAddress")),
+        )
+        if value
+    )
+
+
+def _wan_dns(wan: Dict[str, Any]) -> str:
+    return _compact_value(wan.get("dnsServers") or wan.get("dns") or wan.get("nameservers"))
+
+
+def _wan_detail_counts(wans: List[Dict[str, Any]]) -> Dict[str, int]:
+    return {
+        "total": len(wans),
+        "addressing": sum(1 for wan in wans if _wan_addressing(wan)),
+        "ip_gateway": sum(1 for wan in wans if _wan_ip_gateway(wan)),
+        "dns": sum(1 for wan in wans if _wan_dns(wan)),
+    }
+
+
+def _wan_detail_finding(wans: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    counts = _wan_detail_counts(wans)
+    total = counts["total"]
+    if not total:
+        return None
+    if not any(counts[key] for key in ("addressing", "ip_gateway", "dns")):
+        return {
+            "status": "Low detail",
+            "summary": f"{_plural(total, 'WAN record')} captured, but no addressing, IP/gateway, or DNS fields were exposed.",
+            "counts": counts,
+        }
+    if counts["addressing"] < total or counts["ip_gateway"] < total:
+        return {
+            "status": "Partial",
+            "summary": f"{_plural(total, 'WAN record')} captured; detail coverage is addressing {counts['addressing']}/{total}, IP/gateway {counts['ip_gateway']}/{total}, DNS {counts['dns']}/{total}.",
+            "counts": counts,
+        }
+    return None
 
 
 def _vpn_rows(items: List[Dict[str, Any]]) -> List[List[Any]]:
@@ -1060,6 +1100,172 @@ def _telemetry_recovery_rows(telemetry_probes: List[Dict[str, Any]], net: Dict[s
     ]
 
 
+def _backup_completion_action_rows(
+    *,
+    all_networks: List[Dict[str, Any]],
+    all_wans: List[Dict[str, Any]],
+    all_dns_policies: List[Dict[str, Any]],
+    all_firewall_policies: List[Dict[str, Any]],
+    telemetry_probes: List[Dict[str, Any]],
+    errors: List[Dict[str, Any]],
+    unsupported: List[Dict[str, Any]],
+) -> List[List[Any]]:
+    rows: List[List[Any]] = []
+
+    if errors:
+        rows.append(
+            [
+                "1",
+                "Collection errors",
+                "Fix first",
+                f"{_plural(len(errors), 'hard endpoint error')} captured.",
+                "Resolve credential, permission, or reachability errors and rerun before treating the backup as final.",
+            ]
+        )
+
+    telemetry_total = len(telemetry_probes)
+    telemetry_available = sum(1 for probe in telemetry_probes if probe.get("available"))
+    if telemetry_total and telemetry_available == 0:
+        rows.append(
+            [
+                "1",
+                "Switch-port and AP-radio telemetry",
+                "Manual export needed",
+                f"0 of {telemetry_total} detailed telemetry probe endpoint(s) returned data.",
+                "Export UniFi support data or controller screenshots for switch ports, PoE draw, AP channel, AP power, RF utilization, and channel utilization.",
+            ]
+        )
+    elif telemetry_total and telemetry_available < telemetry_total:
+        rows.append(
+            [
+                "2",
+                "Switch-port and AP-radio telemetry",
+                "Partial",
+                f"{telemetry_available} of {telemetry_total} detailed telemetry probe endpoint(s) returned data.",
+                "Use captured telemetry where present and manually fill missing port, PoE, channel, and RF fields before final planning.",
+            ]
+        )
+    elif not telemetry_total:
+        rows.append(
+            [
+                "2",
+                "Switch-port and AP-radio telemetry",
+                "Not captured",
+                "No detailed telemetry probes were saved in this backup.",
+                "Run the current UniFi pipeline with local Network Application access, then export screenshots if the controller still does not expose telemetry endpoints.",
+            ]
+        )
+
+    network_detail = _network_detail_finding(all_networks)
+    if network_detail:
+        rows.append(
+            [
+                "1",
+                "Address plan and DHCP scopes",
+                network_detail["status"],
+                network_detail["summary"],
+                "Export controller UI network/VLAN settings or screenshots for subnet, gateway, DHCP mode, DHCP ranges, DNS servers, and relay/server ownership.",
+            ]
+        )
+    elif all_networks:
+        rows.append(
+            [
+                "3",
+                "Address plan and DHCP scopes",
+                "Captured",
+                f"{_plural(len(all_networks), 'network/VLAN definition')} include address-plan fields exposed by the API.",
+                "Use this table as a planning input and still validate against the live controller before migration.",
+            ]
+        )
+    else:
+        rows.append(
+            [
+                "1",
+                "Address plan and DHCP scopes",
+                "Missing",
+                "No network/VLAN endpoint data was captured.",
+                "Validate API permissions and export controller UI network settings before disaster-recovery or migration use.",
+            ]
+        )
+
+    wan_detail = _wan_detail_finding(all_wans)
+    if wan_detail:
+        rows.append(
+            [
+                "2",
+                "WAN/provider details",
+                wan_detail["status"],
+                wan_detail["summary"],
+                "Record ISP circuit labels, handoff ports, addressing mode, static IPs, gateways, DNS, failover order, and provider contacts from the controller UI or install notes.",
+            ]
+        )
+    elif all_wans:
+        rows.append(
+            [
+                "3",
+                "WAN/provider details",
+                "Captured",
+                f"{_plural(len(all_wans), 'WAN record')} include addressing and gateway fields exposed by the API.",
+                "Validate circuit labels and provider contacts outside the API backup.",
+            ]
+        )
+    else:
+        rows.append(
+            [
+                "2",
+                "WAN/provider details",
+                "Missing",
+                "No WAN endpoint data was captured.",
+                "Export WAN settings from the controller UI and document provider handoff details.",
+            ]
+        )
+
+    if all_firewall_policies:
+        rows.append(
+            [
+                "3",
+                "Firewall policy backup",
+                "Captured",
+                f"{_plural(len(all_firewall_policies), 'firewall policy', 'firewall policies')} captured.",
+                "Review policy intent and logging, then archive this JSON alongside any controller support export.",
+            ]
+        )
+    else:
+        rows.append(
+            [
+                "1",
+                "Firewall policy backup",
+                "Missing",
+                "No firewall policies were captured.",
+                "Validate policy endpoint permissions and export screenshots before treating this as a security backup.",
+            ]
+        )
+
+    if not all_dns_policies:
+        rows.append(
+            [
+                "2",
+                "DNS/security filtering owner",
+                "Confirm owner",
+                "No UniFi DNS policies were captured.",
+                "Document whether filtering lives in UniFi, upstream DNS, firewall content filtering, endpoint security, or another security stack.",
+            ]
+        )
+
+    if unsupported:
+        rows.append(
+            [
+                "3",
+                "Optional controller endpoints",
+                "Documented gaps",
+                f"{_plural(len(unsupported), 'optional endpoint coverage note')} captured.",
+                "Keep these notes with the report; they explain controller/API limits rather than failed mandatory collection.",
+            ]
+        )
+
+    return sorted(rows, key=lambda row: (int(row[0]), str(row[1])))
+
+
 def _wifi_security_weak(wifi: Iterable[Dict[str, Any]]) -> List[str]:
     weak: List[str] = []
     for wlan in wifi:
@@ -1228,12 +1434,13 @@ def _data_confidence_rows(
 ) -> List[List[Any]]:
     telemetry_available = sum(1 for probe in telemetry_probes if probe.get("available"))
     network_detail = _network_detail_finding(all_networks)
+    wan_detail = _wan_detail_finding(all_wans)
     return [
         ["Inventory and device status", "High" if all_devices else "Low", f"{_plural(len(all_devices), 'device record')} captured with controller state."],
         ["Client attachment detail", "High" if all_clients else "Low", f"{_plural(len(all_clients), 'client record')} captured with uplink mapping where present."],
         ["VLAN/network definitions", "Low" if network_detail else ("Medium" if network_count else "Low"), network_detail["summary"] if network_detail else f"{_plural(network_count, 'network/VLAN definition')} captured with subnet/DHCP fields where exposed."],
         ["Firewall policy backup", "High" if firewall_policy_count else "Low", f"{_plural(firewall_policy_count, 'policy', 'policies')} captured."],
-        ["WAN detail", "Low" if all_wans else "Not captured", f"{_plural(len(all_wans), 'WAN record')} captured; current endpoint only exposed labels in this run."],
+        ["WAN detail", "Low" if wan_detail else ("Medium" if all_wans else "Not captured"), wan_detail["summary"] if wan_detail else f"{_plural(len(all_wans), 'WAN record')} captured with addressing fields where exposed."],
         ["Port and radio telemetry", "Low" if telemetry_available == 0 else "Medium", _telemetry_gap_summary(telemetry_probes)],
     ]
 
@@ -1707,6 +1914,15 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     client_age = _client_age_buckets(all_clients, collected_at)
     pricing = _pricing_payload()
     hardware_rows, hardware_totals = _hardware_refresh_rows(all_devices, legacy_aps, pricing)
+    backup_completion_rows = _backup_completion_action_rows(
+        all_networks=site_payloads["networks"],
+        all_wans=site_payloads["wans"],
+        all_dns_policies=site_payloads["dns_policies"],
+        all_firewall_policies=site_payloads["firewall_policies"],
+        telemetry_probes=telemetry_probes,
+        errors=errors,
+        unsupported=unsupported,
+    )
     cards = [
         ("Sites", len(site_summaries) or len(sm_sites)),
         ("Devices", len(all_devices)),
@@ -1833,6 +2049,15 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     ]
     sections.append("<h3>Health at a Glance</h3>")
     sections.append(_health_cards(health_cards))
+    sections.append("</section>")
+
+    sections.append("<section class='wide-section'><h2>1A. Backup Completion Action Plan</h2>")
+    sections.append(
+        _table(
+            ["Priority", "Backup Area", "Status", "Evidence", "Recommended Completion Step"],
+            backup_completion_rows,
+        )
+    )
     sections.append("</section>")
 
     sections.append("<section><h2>Guide. How to Use This Report</h2>")
@@ -2126,10 +2351,11 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append("</section>")
 
     complete_body = "\n".join(sections)
-    exec_body = _select_sections(complete_body, ("1. Executive Summary", "Guide. How to Use This Report", "9. Recommendations & Implementation Plan", "10. Hardware Refresh & Budget Planning"))
+    exec_body = _select_sections(complete_body, ("1. Executive Summary", "1A. Backup Completion Action Plan", "Guide. How to Use This Report", "9. Recommendations & Implementation Plan", "10. Hardware Refresh & Budget Planning"))
     backup_body = _select_sections(
         complete_body,
         (
+            "1A. Backup Completion Action Plan",
             "2. Collection Coverage",
             "4. Configuration Backup Completeness",
             "6. Sites, Networks, VLANs, and DHCP",
@@ -2203,6 +2429,7 @@ def _html_shell(
     collected = metadata.get("collectedAt") or "not captured"
     toc_items = toc_items or [
         ("1", "Executive Summary", "1-executive-summary"),
+        ("1A", "Backup Completion Action Plan", "1a-backup-completion-action-plan"),
         ("Guide", "How to Use This Report", "guide-how-to-use-this-report"),
         ("2", "Collection Coverage", "2-collection-coverage"),
         ("3", "Network Overview", "3-network-overview"),

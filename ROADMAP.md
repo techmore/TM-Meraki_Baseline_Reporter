@@ -132,6 +132,8 @@ This project is currently functional as a Python reporting pipeline. The immedia
   security baseline, and implementation planning sections.~~
 - ~~Promote missing UniFi subnet/gateway/DHCP fields into executive,
   confidence, security baseline, and implementation planning sections.~~
+- ~~Add a UniFi backup completion action plan that ranks missing telemetry,
+  address-plan, WAN, DNS, firewall, and optional endpoint evidence.~~
 - Add deeper UniFi switch/AP port and radio telemetry when the controller API
   exposes it.
 

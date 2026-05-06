@@ -3,7 +3,7 @@ from pathlib import Path
 
 from unifi.client import UniFiRequestError
 from unifi.collect import _call_list, _collect_telemetry_probes
-from unifi.report import build_report, _network_detail_finding
+from unifi.report import build_report, _backup_completion_action_rows, _network_detail_finding
 from unifi.profiles import discover_site_profiles
 
 
@@ -189,6 +189,13 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Current State Assessment" in html
     assert "Top Operational Risks" in html
     assert "Recommended Priorities" in html
+    assert "Backup Completion Action Plan" in html
+    assert "Switch-port and AP-radio telemetry" in html
+    assert "Manual export needed" in html
+    assert "Address plan and DHCP scopes" in html
+    assert "WAN/provider details" in html
+    assert "DNS/security filtering owner" in html
+    assert "Optional controller endpoints" in html
     assert "Client concentration requires validation" in html
     assert "Validate client concentration" in html
     assert "Client access policy appears flat" in html
@@ -261,11 +268,13 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "not exposed (HTTP 404)" in html
     assert "UniFi Executive Summary" in exec_html
     assert "Top Operational Risks" in exec_html
+    assert "Backup Completion Action Plan" in exec_html
     assert "Recommendations &amp; Implementation Plan" in exec_html
     assert "Hardware Refresh &amp; Budget Planning" in exec_html
     assert "Firewall and Policy Backup" not in exec_html
     assert "UniFi Backup Settings Report" in backup_html
     assert "Configuration Backup Completeness" in backup_html
+    assert "Backup Completion Action Plan" in backup_html
     assert "Telemetry Recovery Plan" in backup_html
     assert "Firewall and Policy Backup" in backup_html
     assert "Network Services Backup" in backup_html
@@ -301,6 +310,26 @@ def test_unifi_report_network_detail_finding_flags_missing_address_fields():
     assert finding is not None
     assert finding["status"] == "Low detail"
     assert "none expose subnet, gateway, DHCP mode, or DHCP range" in finding["summary"]
+
+
+def test_unifi_report_backup_completion_action_rows_rank_missing_evidence():
+    rows = _backup_completion_action_rows(
+        all_networks=[{"name": "Default", "vlanId": 1}],
+        all_wans=[{"name": "WAN 1"}],
+        all_dns_policies=[],
+        all_firewall_policies=[],
+        telemetry_probes=[{"label": "site_ports", "available": False, "status": 404}],
+        errors=[],
+        unsupported=[{"label": "Default:vpn_tunnels", "status": 404}],
+    )
+
+    areas = {row[1]: row for row in rows}
+    assert areas["Switch-port and AP-radio telemetry"][2] == "Manual export needed"
+    assert areas["Address plan and DHCP scopes"][2] == "Low detail"
+    assert areas["WAN/provider details"][2] == "Low detail"
+    assert areas["Firewall policy backup"][2] == "Missing"
+    assert areas["DNS/security filtering owner"][2] == "Confirm owner"
+    assert areas["Optional controller endpoints"][2] == "Documented gaps"
 
 
 def test_unifi_report_surfaces_remote_connector_auth_guidance(tmp_path: Path):
