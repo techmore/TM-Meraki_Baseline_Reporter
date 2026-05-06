@@ -112,7 +112,7 @@ This project is currently functional as a Python reporting pipeline. The immedia
   for multi-site runs.~~
 - ~~Write UniFi report inventory data and a static `index.html` for generated
   outputs.~~
-- Improve UniFi executive summary language once more live sites are captured.
+- ~~Improve UniFi executive summary language once more live sites are captured.~~
 - Add deeper UniFi switch/AP port and radio telemetry when the controller API
   exposes it.
 

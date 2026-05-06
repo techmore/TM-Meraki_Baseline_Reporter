@@ -32,7 +32,9 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
                         "networks": "sites/Main/networks.json",
                         "wifi": "sites/Main/wifi.json",
                         "firewall_zones": "sites/Main/firewall_zones.json",
+                        "firewall_policies": "sites/Main/firewall_policies.json",
                     },
+                    "counts": {"devices": 3, "clients": 1, "networks": 1, "wifi": 1, "firewall_zones": 1, "firewall_policies": 1},
                 }
             ]
         ),
@@ -41,15 +43,21 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     (site_dir / "devices.json").write_text(
         json.dumps(
             [
-                {"name": "U7-Pro-1", "model": "U7-Pro", "type": "access point", "state": "ONLINE", "ipAddress": "10.1.1.10"},
+                {"id": "ap-1", "name": "U7-Pro-1", "model": "U7-Pro", "type": "access point", "state": "ONLINE", "ipAddress": "10.1.1.10"},
                 {"name": "IW HD", "model": "IW HD", "features": ["switching", "accessPoint"], "state": "ONLINE", "ipAddress": "10.1.1.11"},
                 {"name": "USW-48", "model": "USW-Pro-48-PoE", "type": "switch", "state": "ONLINE", "ipAddress": "10.1.1.20"},
             ]
         ),
         encoding="utf-8",
     )
-    (site_dir / "clients.json").write_text(json.dumps([{"hostname": "client-1", "ipAddress": "10.10.0.50"}]), encoding="utf-8")
-    (site_dir / "networks.json").write_text(json.dumps([{"name": "Staff", "vlanId": 100, "subnet": "10.100.0.0/16", "dhcpMode": "server"}]), encoding="utf-8")
+    (site_dir / "clients.json").write_text(
+        json.dumps([{"hostname": "client-1", "type": "WIRELESS", "ipAddress": "10.10.0.50", "uplinkDeviceId": "ap-1", "access": {"type": "DEFAULT"}}]),
+        encoding="utf-8",
+    )
+    (site_dir / "networks.json").write_text(
+        json.dumps([{"name": "Staff", "vlanId": 100, "subnet": "10.100.0.0/16", "dhcpMode": "server", "zoneId": "zone-1", "metadata": {"origin": "USER_DEFINED"}}]),
+        encoding="utf-8",
+    )
     (site_dir / "wifi.json").write_text(
         json.dumps(
             [
@@ -65,6 +73,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
         encoding="utf-8",
     )
     (site_dir / "firewall_zones.json").write_text(json.dumps([{"name": "Internal", "id": "zone-1"}]), encoding="utf-8")
+    (site_dir / "firewall_policies.json").write_text(json.dumps([{"name": "Allow Staff", "enabled": True, "action": {"type": "ALLOW"}}]), encoding="utf-8")
 
     output = tmp_path / "report"
     paths = build_report(str(source), str(output))
@@ -78,6 +87,13 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "WPA3" in html
     assert "NATIVE" in html
     assert "Firewall Zones" in html
+    assert "Recommended Follow-Up" in html
+    assert "By Model" in html
+    assert "Client Load by Uplink" in html
+    assert "Firewall Policy Summary" in html
+    assert "Internal" in html
+    assert "U7-Pro-1 (U7-Pro)" in html
+    assert "Firmware" in html
 
 
 def test_unifi_profiles_discovers_numbered_site_profiles(monkeypatch):
