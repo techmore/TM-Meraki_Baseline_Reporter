@@ -78,3 +78,7 @@ When `--all-sites` is used, outputs are separated by saved profile:
 - `unifi/reports/sites/site1/`
 - `unifi/reports/sites/site_run_manifest.json`
 - `unifi/reports/sites/index.html`
+
+The multi-site index includes per-profile device/client counts, configuration
+counts, telemetry probe availability, endpoint errors, and unsupported endpoint
+notes when a collection summary is available.

@@ -17,6 +17,13 @@ from .profiles import UniFiSiteProfile, discover_site_profiles, profile_by_key
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _load_json(path: Path, default: object) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
 def _relative_href(path: Path, base: Path) -> str:
     try:
         rel = os.path.relpath(path.resolve(), base.resolve())
@@ -29,6 +36,81 @@ def _status_badge(value: object) -> str:
     raw = str(value or "unknown")
     css = "ok" if raw == "ok" else ("warn" if raw in {"skipped", "missing_backup"} else "bad")
     return f'<span class="status {css}">{html.escape(raw)}</span>'
+
+
+def _int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _profile_summary_metrics(backups_dir: Path) -> Dict[str, object]:
+    summary = _load_json(backups_dir / "collection_summary.json", {})
+    if not isinstance(summary, dict):
+        return {}
+    net = summary.get("networkApplication") if isinstance(summary.get("networkApplication"), dict) else {}
+    sm = summary.get("siteManager") if isinstance(summary.get("siteManager"), dict) else {}
+    site_summaries = net.get("siteSummaries") if isinstance(net.get("siteSummaries"), list) else []
+    aggregate = {
+        "sites": len(site_summaries) or _int((net.get("counts") or {}).get("sites") if isinstance(net.get("counts"), dict) else 0),
+        "devices": 0,
+        "clients": 0,
+        "networks": 0,
+        "wifi": 0,
+        "firewallPolicies": 0,
+        "firewallZones": 0,
+        "telemetryProbeAvailable": 0,
+        "telemetryProbeTotal": 0,
+        "endpointErrors": len(sm.get("errors") or []) + len(net.get("errors") or []),
+        "unsupportedEndpoints": len(sm.get("unsupportedEndpoints") or []) + len(net.get("unsupportedEndpoints") or []),
+    }
+    for site in site_summaries:
+        if not isinstance(site, dict) or not isinstance(site.get("counts"), dict):
+            continue
+        counts = site["counts"]
+        aggregate["devices"] += _int(counts.get("devices"))
+        aggregate["clients"] += _int(counts.get("clients"))
+        aggregate["networks"] += _int(counts.get("networks"))
+        aggregate["wifi"] += _int(counts.get("wifi"))
+        aggregate["firewallPolicies"] += _int(counts.get("firewall_policies"))
+        aggregate["firewallZones"] += _int(counts.get("firewall_zones"))
+        aggregate["telemetryProbeAvailable"] += _int(counts.get("telemetry_probe_available"))
+        aggregate["telemetryProbeTotal"] += _int(counts.get("telemetry_probe_total"))
+
+    info_file = (net.get("files") or {}).get("info") if isinstance(net.get("files"), dict) else ""
+    if info_file:
+        info = _load_json(backups_dir / str(info_file), {})
+        if isinstance(info, dict) and info.get("applicationVersion"):
+            aggregate["networkVersion"] = str(info.get("applicationVersion"))
+    return aggregate
+
+
+def _metric_value(profile: Dict[str, object], key: str) -> str:
+    metrics = profile.get("summaryMetrics") if isinstance(profile.get("summaryMetrics"), dict) else {}
+    value = metrics.get(key)
+    return "" if value is None else str(value)
+
+
+def _config_summary(profile: Dict[str, object]) -> str:
+    networks = _metric_value(profile, "networks") or "0"
+    wifi = _metric_value(profile, "wifi") or "0"
+    policies = _metric_value(profile, "firewallPolicies") or "0"
+    return f"{networks} net / {wifi} WiFi / {policies} FW"
+
+
+def _telemetry_summary(profile: Dict[str, object]) -> str:
+    available = _metric_value(profile, "telemetryProbeAvailable")
+    total = _metric_value(profile, "telemetryProbeTotal")
+    if total:
+        return f"{available or '0'} / {total}"
+    return ""
+
+
+def _coverage_summary(profile: Dict[str, object]) -> str:
+    errors = _metric_value(profile, "endpointErrors") or "0"
+    unsupported = _metric_value(profile, "unsupportedEndpoints") or "0"
+    return f"{errors} errors / {unsupported} notes"
 
 
 def build_site_index_html(manifest: Dict[str, object], reports_root: Path, generated_at: datetime | None = None) -> str:
@@ -53,6 +135,11 @@ def build_site_index_html(manifest: Dict[str, object], reports_root: Path, gener
             f"<td>{html.escape(str(profile.get('profile') or ''))}</td>"
             f"<td>{_status_badge(profile.get('collectionStatus'))}</td>"
             f"<td>{_status_badge(profile.get('reportStatus'))}</td>"
+            f"<td>{html.escape(_metric_value(profile, 'devices'))}</td>"
+            f"<td>{html.escape(_metric_value(profile, 'clients'))}</td>"
+            f"<td>{html.escape(_config_summary(profile))}</td>"
+            f"<td>{html.escape(_telemetry_summary(profile))}</td>"
+            f"<td>{html.escape(_coverage_summary(profile))}</td>"
             f"<td>{report_link}</td>"
             f"<td>{inventory_link}</td>"
             "</tr>"
@@ -99,7 +186,7 @@ def build_site_index_html(manifest: Dict[str, object], reports_root: Path, gener
     <section>
       <p>Saved UniFi profile report outputs for this run.</p>
       <table>
-        <thead><tr><th>Site</th><th>Profile</th><th>Collection</th><th>Report</th><th>PDF</th><th>Inventory</th></tr></thead>
+        <thead><tr><th>Site</th><th>Profile</th><th>Collection</th><th>Report</th><th>Devices</th><th>Clients</th><th>Config</th><th>Telemetry</th><th>Coverage</th><th>PDF</th><th>Inventory</th></tr></thead>
         <tbody>{''.join(rows)}</tbody>
       </table>
     </section>
@@ -188,6 +275,7 @@ def _run_one(profile: UniFiSiteProfile, args: argparse.Namespace) -> Dict[str, o
             result["collectionStatus"] = "ok" if collect_status == 0 else "failed"
 
         if (backups_dir / "collection_summary.json").exists():
+            result["summaryMetrics"] = _profile_summary_metrics(backups_dir)
             try:
                 paths = report.build_report(str(backups_dir), str(reports_dir))
                 if args.pdf_only and paths.get("pdf"):
