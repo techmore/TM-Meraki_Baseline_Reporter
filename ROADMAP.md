@@ -126,6 +126,8 @@ This project is currently functional as a Python reporting pipeline. The immedia
   roles so future exposed endpoints can be attributed to the right hardware.~~
 - ~~Clarify UniFi hardware planning so retained active gear is not counted as
   unpriced refresh scope, and summarize refresh/retain/excluded actions.~~
+- ~~Promote high client concentration on one AP/switch into UniFi executive
+  risks, priorities, and implementation planning.~~
 - Add deeper UniFi switch/AP port and radio telemetry when the controller API
   exposes it.
 

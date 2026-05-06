@@ -1057,10 +1057,24 @@ def _client_age_buckets(clients: Iterable[Dict[str, Any]], now: datetime) -> Dic
     return buckets
 
 
+def _client_concentration_findings(all_clients: List[Dict[str, Any]], device_names: Dict[str, str]) -> List[Dict[str, Any]]:
+    total = len(all_clients)
+    if total < 10:
+        return []
+    counts = _count_by(all_clients, lambda client: _client_uplink_label(client, device_names) or "Unknown")
+    findings: List[Dict[str, Any]] = []
+    for uplink, count in counts.items():
+        share = round((count / total) * 100) if total else 0
+        if count >= 5 and share >= 50:
+            findings.append({"uplink": uplink, "count": count, "total": total, "share": share})
+    return sorted(findings, key=lambda item: (-int(item["share"]), -int(item["count"]), str(item["uplink"])))
+
+
 def _top_risks(
     *,
     all_devices: List[Dict[str, Any]],
     all_clients: List[Dict[str, Any]],
+    device_names: Dict[str, str],
     all_wifi: List[Dict[str, Any]],
     all_firewall_policies: List[Dict[str, Any]],
     all_dns_policies: List[Dict[str, Any]],
@@ -1075,6 +1089,11 @@ def _top_risks(
 
     if telemetry_probes and not any(probe.get("available") for probe in telemetry_probes):
         risks.append("Port and radio diagnostics are low-confidence - this controller/API path did not expose switch-port or AP-radio telemetry, so PoE draw, RF interference, channel utilization, and port speed cannot be validated from this backup alone.")
+
+    client_concentration = _client_concentration_findings(all_clients, device_names)
+    if client_concentration:
+        finding = client_concentration[0]
+        risks.append(f"Client concentration requires validation - {finding['uplink']} has {finding['count']} of {finding['total']} captured clients ({finding['share']}%), which may indicate capacity pressure or a single-device dependency.")
 
     risks.extend(_wifi_security_weak(all_wifi)[:3])
 
@@ -1102,6 +1121,8 @@ def _top_risks(
 def _recommended_priorities(
     *,
     all_devices: List[Dict[str, Any]],
+    all_clients: List[Dict[str, Any]],
+    device_names: Dict[str, str],
     all_wifi: List[Dict[str, Any]],
     telemetry_probes: List[Dict[str, Any]],
     all_firewall_policies: List[Dict[str, Any]],
@@ -1112,6 +1133,10 @@ def _recommended_priorities(
         priorities.append("Immediate (0-2 weeks): Validate offline UniFi devices against physical inventory, power, uplinks, and controller adoption state.")
     if telemetry_probes and not any(probe.get("available") for probe in telemetry_probes):
         priorities.append("Immediate (0-2 weeks): Decide whether deeper diagnostics require Site Manager metrics, UniFi system log/SIEM export, SSH/local controller export, or manual screenshots because the Integration API did not expose port/radio telemetry.")
+    client_concentration = _client_concentration_findings(all_clients, device_names)
+    if client_concentration:
+        finding = client_concentration[0]
+        priorities.append(f"Short-term (2-6 weeks): Validate client concentration on {finding['uplink']} ({finding['count']} of {finding['total']} clients) with controller UI metrics, physical placement, and uplink capacity before refresh planning.")
     if _wifi_security_weak(all_wifi):
         priorities.append("Short-term (2-6 weeks): Review SSID security and migrate appropriate production WLANs toward WPA3, private PSK, or 802.1X instead of shared WPA2 Personal.")
     if all_firewall_policies and any(not _as_bool(policy.get("loggingEnabled")) for policy in all_firewall_policies):
@@ -1206,6 +1231,8 @@ def _client_uplink_analysis_rows(all_clients: List[Dict[str, Any]], device_names
 def _implementation_plan_rows(
     *,
     all_devices: List[Dict[str, Any]],
+    all_clients: List[Dict[str, Any]],
+    device_names: Dict[str, str],
     all_wifi: List[Dict[str, Any]],
     all_firewall_policies: List[Dict[str, Any]],
     all_dns_policies: List[Dict[str, Any]],
@@ -1217,11 +1244,15 @@ def _implementation_plan_rows(
     offline = [_device_name(device) for device in all_devices if not _is_online(device)]
     weak_wifi = _wifi_security_weak(all_wifi)
     logging_disabled = sum(1 for policy in all_firewall_policies if not _as_bool(policy.get("loggingEnabled")))
+    client_concentration = _client_concentration_findings(all_clients, device_names)
 
     if offline:
         rows.append(["Immediate", "0-2 weeks", "Validate offline inventory", f"{', '.join(offline[:6])}", "IT operations"])
     if telemetry_probes and not any(probe.get("available") for probe in telemetry_probes):
         rows.append(["Immediate", "0-2 weeks", "Choose a deeper diagnostics source", "Integration API did not expose port/radio telemetry", "Network engineering"])
+    if client_concentration:
+        finding = client_concentration[0]
+        rows.append(["Short-term", "2-6 weeks", "Validate concentrated client load", f"{finding['uplink']} has {finding['count']} of {finding['total']} captured clients ({finding['share']}%)", "Network engineering"])
     if weak_wifi:
         rows.append(["Short-term", "2-6 weeks", "Review SSID security posture", "; ".join(weak_wifi[:2]), "Security / network engineering"])
     if logging_disabled:
@@ -1605,6 +1636,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     top_risks = _top_risks(
         all_devices=all_devices,
         all_clients=all_clients,
+        device_names=device_names,
         all_wifi=site_payloads["wifi"],
         all_firewall_policies=site_payloads["firewall_policies"],
         all_dns_policies=site_payloads["dns_policies"],
@@ -1618,6 +1650,8 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
         _html_list(
             _recommended_priorities(
                 all_devices=all_devices,
+                all_clients=all_clients,
+                device_names=device_names,
                 all_wifi=site_payloads["wifi"],
                 telemetry_probes=telemetry_probes,
                 all_firewall_policies=site_payloads["firewall_policies"],
@@ -1884,6 +1918,8 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
             ["Priority", "Window", "Action", "Evidence", "Owner"],
             _implementation_plan_rows(
                 all_devices=all_devices,
+                all_clients=all_clients,
+                device_names=device_names,
                 all_wifi=site_payloads["wifi"],
                 all_firewall_policies=site_payloads["firewall_policies"],
                 all_dns_policies=site_payloads["dns_policies"],

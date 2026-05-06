@@ -51,7 +51,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
                     },
                     "counts": {
                         "devices": 4,
-                        "clients": 1,
+                        "clients": 10,
                         "networks": 1,
                         "wifi": 1,
                         "firewall_zones": 1,
@@ -82,7 +82,12 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
         encoding="utf-8",
     )
     (site_dir / "clients.json").write_text(
-        json.dumps([{"hostname": "client-1", "type": "WIRELESS", "ipAddress": "10.100.0.50", "uplinkDeviceId": "ap-1", "access": {"type": "DEFAULT"}}]),
+        json.dumps(
+            [
+                {"hostname": f"client-{i}", "type": "WIRELESS", "ipAddress": f"10.100.0.{50 + i}", "uplinkDeviceId": "ap-1", "access": {"type": "DEFAULT"}}
+                for i in range(10)
+            ]
+        ),
         encoding="utf-8",
     )
     (site_dir / "networks.json").write_text(
@@ -184,6 +189,8 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Current State Assessment" in html
     assert "Top Operational Risks" in html
     assert "Recommended Priorities" in html
+    assert "Client concentration requires validation" in html
+    assert "Validate client concentration" in html
     assert "Data Confidence Snapshot" in html
     assert "Health at a Glance" in html
     assert "How to Use This Report" in html
@@ -193,6 +200,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Client Overview Summary" in html
     assert "Client Concentration by Uplink" in html
     assert "Recommendations &amp; Implementation Plan" in html
+    assert "Validate concentrated client load" in html
     assert "Choose a deeper diagnostics source" in html
     assert "Hardware Refresh &amp; Budget Planning" in html
     assert "Refresh Action Summary" in html
@@ -242,7 +250,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "10.100.0.10 - 10.100.0.250" in html
     assert "10.100.0.0/24" in html
     assert "Staff (VLAN 100)" in html
-    assert "U7-Pro-1 (U7-Pro): 1" in html
+    assert "U7-Pro-1 (U7-Pro): 10" in html
     assert "not an authoritative DHCP lease export" in html
     assert "0 / 3 available" in html
     assert "captured empty" in html
