@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -39,8 +41,9 @@ class InventoryResult:
         return not self.missing
 
 
-def _has_named_alias(org_dir: Path, pattern: str) -> bool:
-    return any(path.is_file() for path in org_dir.glob(pattern))
+def _find_named_alias(org_dir: Path, pattern: str) -> Path | None:
+    matches = sorted(path for path in org_dir.glob(pattern) if path.is_file())
+    return matches[-1] if matches else None
 
 
 def inspect_org_dir(org_dir: Path) -> InventoryResult:
@@ -49,7 +52,7 @@ def inspect_org_dir(org_dir: Path) -> InventoryResult:
 
     for deliverable in EXPECTED_DELIVERABLES:
         compat_path = org_dir / deliverable.compat_name
-        if compat_path.is_file() and _has_named_alias(org_dir, deliverable.named_pattern):
+        if compat_path.is_file() and _find_named_alias(org_dir, deliverable.named_pattern):
             present.append(deliverable)
         else:
             missing.append(deliverable)
@@ -78,6 +81,13 @@ def _fmt_size(path: Path) -> str:
     return f"{size} B"
 
 
+def _size_bytes(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
 def print_inventory(results: tuple[InventoryResult, ...]) -> None:
     for result in results:
         print(f"{result.org_dir.name}: {len(result.present)}/{len(EXPECTED_DELIVERABLES)} expected deliverables")
@@ -88,12 +98,67 @@ def print_inventory(results: tuple[InventoryResult, ...]) -> None:
             print(f"  MISSING  {deliverable.label}: {deliverable.compat_name} and {deliverable.named_pattern}")
 
 
+def build_manifest(results: tuple[InventoryResult, ...], reports_dir: Path) -> dict:
+    latest_dir = reports_dir / "latest"
+    orgs = []
+    for result in results:
+        deliverables = []
+        for deliverable in EXPECTED_DELIVERABLES:
+            compat_path = result.org_dir / deliverable.compat_name
+            named_path = _find_named_alias(result.org_dir, deliverable.named_pattern)
+            present = compat_path.is_file() and named_path is not None
+            deliverables.append(
+                {
+                    "label": deliverable.label,
+                    "present": present,
+                    "compatName": deliverable.compat_name,
+                    "compatPath": str(compat_path) if compat_path.exists() else None,
+                    "compatSizeBytes": _size_bytes(compat_path) if compat_path.exists() else None,
+                    "namedPattern": deliverable.named_pattern,
+                    "namedPath": str(named_path) if named_path else None,
+                    "namedSizeBytes": _size_bytes(named_path) if named_path else None,
+                }
+            )
+        orgs.append(
+            {
+                "org": result.org_dir.name,
+                "latestPath": str(result.org_dir),
+                "status": "ok" if result.ok else "missing",
+                "presentCount": len(result.present),
+                "expectedCount": len(EXPECTED_DELIVERABLES),
+                "deliverables": deliverables,
+            }
+        )
+
+    return {
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "reportsDir": str(reports_dir),
+        "latestDir": str(latest_dir),
+        "status": "ok" if all(result.ok for result in results) else "missing",
+        "orgCount": len(results),
+        "expectedDeliverables": [deliverable.label for deliverable in EXPECTED_DELIVERABLES],
+        "orgs": orgs,
+    }
+
+
+def write_manifest(results: tuple[InventoryResult, ...], reports_dir: Path, manifest_path: Path | None = None) -> Path:
+    target = manifest_path or (reports_dir / "latest" / "report_inventory.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = build_manifest(results, reports_dir)
+    target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate generated report deliverables.")
     parser.add_argument(
         "--reports-dir",
         default="reports",
         help="Reports directory containing latest/<org>/ outputs. Default: reports",
+    )
+    parser.add_argument(
+        "--manifest",
+        help="Optional manifest path. Default: <reports-dir>/latest/report_inventory.json",
     )
     args = parser.parse_args(argv)
 
@@ -109,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print_inventory(results)
+    manifest_path = write_manifest(results, reports_dir, Path(args.manifest).resolve() if args.manifest else None)
+    print(f"Manifest: {manifest_path}")
     if any(not result.ok for result in results):
         return 1
     return 0

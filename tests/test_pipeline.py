@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import json
 from pathlib import Path
 
 import pytest
@@ -277,6 +278,16 @@ class TestReportInventory:
         assert "Demo_Org: 6/6 expected deliverables" in output
         assert "Battery backup" in output
         assert "UPS switch power plan" in output
+        assert "Manifest:" in output
+
+        manifest = json.loads((tmp_path / "reports" / "latest" / "report_inventory.json").read_text(encoding="utf-8"))
+        assert manifest["status"] == "ok"
+        assert manifest["orgCount"] == 1
+        assert manifest["orgs"][0]["presentCount"] == 6
+        assert manifest["orgs"][0]["deliverables"][0]["compatName"] == "report.pdf"
+        assert manifest["orgs"][0]["deliverables"][0]["namedPath"].endswith(
+            "Demo_Org_Complete_Report_2026-05-02.pdf"
+        )
 
     def test_inventory_fails_when_expected_report_is_missing(self, tmp_path, capsys):
         org_dir = tmp_path / "reports" / "latest" / "Demo_Org"
@@ -288,6 +299,15 @@ class TestReportInventory:
         output = capsys.readouterr().out
         assert "Demo_Org: 5/6 expected deliverables" in output
         assert "MISSING  AP spectrum" in output
+
+        manifest = json.loads((tmp_path / "reports" / "latest" / "report_inventory.json").read_text(encoding="utf-8"))
+        assert manifest["status"] == "missing"
+        ap_spectrum = [
+            item
+            for item in manifest["orgs"][0]["deliverables"]
+            if item["label"] == "AP spectrum"
+        ][0]
+        assert ap_spectrum["present"] is False
 
 
 class TestReportingEntrypoint:

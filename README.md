@@ -85,6 +85,7 @@ report generation, and a final deliverable inventory check.
 - `reports/<org>/<timestamp>/SITE_NAME_AP_Spectrum_Report_YYYY-MM-DD.pdf` — run-specific AP spectrum and interference report
 - `reports/<org>/<timestamp>/SITE_NAME_UPS_Switch_Power_Plan_Report_YYYY-MM-DD.json` — run-specific UPS sizing data
 - `reports/latest/<org>/report.pdf` — compatibility alias for the latest full report
+- `reports/latest/report_inventory.json` — generated manifest of latest report deliverables and file sizes
 
 By default `run.sh` passes `--pdf-only`, so generated HTML is removed after PDFs
 are rendered. Use `./run.sh --keep-html` when HTML inspection is useful.
