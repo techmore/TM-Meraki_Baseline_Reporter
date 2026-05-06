@@ -38,8 +38,10 @@ TELEMETRY_PROBES: Tuple[Dict[str, str], ...] = (
     {"label": "wifi_radio_settings", "scope": "site", "suffix": "wifi/radio-settings", "purpose": "WiFi radio settings"},
     {"label": "wifi_rf_environments", "scope": "site", "suffix": "wifi/rf-environments", "purpose": "RF environment telemetry"},
     {"label": "wifi_channel_plans", "scope": "site", "suffix": "wifi/channel-plans", "purpose": "Channel plan telemetry"},
-    {"label": "device_ports", "scope": "device", "interface": "ports", "suffix": "devices/{device_id}/ports", "purpose": "Per-device port telemetry"},
-    {"label": "device_radios", "scope": "device", "interface": "radios", "suffix": "devices/{device_id}/radios", "purpose": "Per-device radio telemetry"},
+    {"label": "device_ports_switch", "scope": "device", "role": "switch", "interface": "ports", "suffix": "devices/{device_id}/ports", "purpose": "Per-switch port telemetry"},
+    {"label": "device_ports_gateway", "scope": "device", "role": "gateway", "interface": "ports", "suffix": "devices/{device_id}/ports", "purpose": "Per-gateway port telemetry"},
+    {"label": "device_ports_ap", "scope": "device", "role": "access_point", "interface": "ports", "suffix": "devices/{device_id}/ports", "purpose": "Per-AP uplink/embedded port telemetry"},
+    {"label": "device_radios_ap", "scope": "device", "role": "access_point", "interface": "radios", "suffix": "devices/{device_id}/radios", "purpose": "Per-AP radio telemetry"},
 )
 
 
@@ -99,16 +101,69 @@ def _site_matches(site: Dict[str, Any], selector: str) -> bool:
     return wanted in {value.strip().lower() for value in values if value}
 
 
-def _device_with_interface(devices: Iterable[Dict[str, Any]], interface: str) -> Dict[str, Any] | None:
+def _device_label(device: Dict[str, Any]) -> str:
+    name = str(device.get("name") or device.get("displayName") or device.get("id") or device.get("_id") or "device")
+    model = str(device.get("model") or "").strip()
+    return f"{name} ({model})" if model and model not in name else name
+
+
+def _device_text(device: Dict[str, Any]) -> str:
+    fields = [str(device.get(key) or "") for key in ("type", "role", "model", "name")]
+    features = device.get("features")
+    if isinstance(features, list):
+        fields.extend(str(item) for item in features if item)
+    elif features:
+        fields.append(str(features))
+    return " ".join(fields).lower()
+
+
+def _device_matches_role(device: Dict[str, Any], role: str) -> bool:
+    role = role.strip().lower()
+    if not role:
+        return True
+    text = _device_text(device)
+    features = {str(item).strip().lower() for item in device.get("features") or [] if item} if isinstance(device.get("features"), list) else set()
+    if role == "access_point":
+        return "accesspoint" in features or "access point" in text
+    if role == "gateway":
+        return any(token in text for token in ("gateway", "ucg", "udm", "uxg", "dream machine"))
+    if role == "switch":
+        if any(token in text for token in ("gateway", "ucg", "udm", "uxg", "dream machine")):
+            return False
+        return "switching" in features or "switch" in text or "usw" in text
+    return role in text
+
+
+def _device_online_score(device: Dict[str, Any]) -> int:
+    state = str(device.get("state") or device.get("status") or "").strip().lower()
+    if not state:
+        return 0
+    return 0 if state in {"online", "connected", "active"} else 1
+
+
+def _device_role_score(device: Dict[str, Any], role: str) -> int:
+    text = _device_text(device)
+    features = {str(item).strip().lower() for item in device.get("features") or [] if item} if isinstance(device.get("features"), list) else set()
+    if role == "switch":
+        return 1 if "accesspoint" in features or "access point" in text else 0
+    if role == "access_point":
+        return 1 if "switching" in features or "switch" in text else 0
+    return 0
+
+
+def _device_with_interface(devices: Iterable[Dict[str, Any]], interface: str, role: str = "") -> Dict[str, Any] | None:
     wanted = interface.strip().lower()
+    candidates: List[Dict[str, Any]] = []
     for device in devices:
         interfaces = device.get("interfaces")
         if not isinstance(interfaces, list):
             continue
         available = {str(item).strip().lower() for item in interfaces if item}
-        if wanted in available and (device.get("id") or device.get("_id")):
-            return device
-    return None
+        if wanted in available and (device.get("id") or device.get("_id")) and _device_matches_role(device, role):
+            candidates.append(device)
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda device: (_device_online_score(device), _device_role_score(device, role), _device_label(device)))[0]
 
 
 def _payload_count(payload: Any) -> int:
@@ -178,8 +233,9 @@ def _collect_telemetry_probes(client: UniFiClient, network_prefix: str, site_id:
         label = probe["label"]
         suffix = probe["suffix"]
         if probe.get("scope") == "device":
-            device = _device_with_interface(device_items, probe.get("interface", ""))
+            device = _device_with_interface(device_items, probe.get("interface", ""), probe.get("role", ""))
             if not device:
+                role = probe.get("role", "device").replace("_", " ")
                 results.append(
                     {
                         "label": label,
@@ -188,14 +244,20 @@ def _collect_telemetry_probes(client: UniFiClient, network_prefix: str, site_id:
                         "available": False,
                         "status": None,
                         "itemCount": 0,
-                        "note": f"No sampled device advertises {probe.get('interface')} interface capability.",
+                        "role": probe.get("role", ""),
+                        "note": f"No sampled {role} device advertises {probe.get('interface')} interface capability.",
                     }
                 )
                 continue
             device_id = str(device.get("id") or device.get("_id"))
             suffix = suffix.format(device_id=device_id)
         path = f"{network_prefix}/sites/{site_id}/{suffix}"
-        results.append(_probe_telemetry_endpoint(client, path, label=label, purpose=probe.get("purpose", ""), output=output, safe=safe))
+        result = _probe_telemetry_endpoint(client, path, label=label, purpose=probe.get("purpose", ""), output=output, safe=safe)
+        if probe.get("scope") == "device":
+            result["role"] = probe.get("role", "")
+            result["sampleDevice"] = _device_label(device)
+            result["sampleDeviceId"] = str(device.get("id") or device.get("_id") or "")
+        results.append(result)
     return results
 
 

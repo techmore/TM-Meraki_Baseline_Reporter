@@ -238,12 +238,17 @@ def _probe_status_summary(probes: Iterable[Dict[str, Any]], terms: Iterable[str]
 def _probe_rows(probes: Iterable[Dict[str, Any]]) -> List[List[Any]]:
     rows: List[List[Any]] = []
     for probe in probes:
+        sample = _first(probe, ("sampleDevice", "note"))
+        role = _first(probe, ("role",))
+        if sample and role:
+            sample = f"{sample} [{role.replace('_', ' ')}]"
         rows.append(
             [
                 probe.get("label", ""),
                 _probe_status_label(probe),
                 _yes_no(probe.get("available")),
                 probe.get("itemCount", 0),
+                sample,
                 probe.get("purpose") or probe.get("note") or "",
             ]
         )
@@ -1722,7 +1727,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
     sections.append(_table(["Device", "Model", "Features", "Interfaces", "Detail"], _interface_device_rows(all_devices), "No device interface coverage captured."))
     if telemetry_probes:
         sections.append("<h4>API Telemetry Probe Results</h4>")
-        sections.append(_table(["Probe", "Status", "Available", "Items", "Purpose"], _probe_rows(telemetry_probes), "No telemetry probes captured."))
+        sections.append(_table(["Probe", "Status", "Available", "Items", "Sample / Note", "Purpose"], _probe_rows(telemetry_probes), "No telemetry probes captured."))
     device_rows = []
     for dev in all_devices[:300]:
         device_rows.append([

@@ -63,7 +63,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
                         "hotspot_vouchers": 1,
                         "vpn_tunnels": 0,
                         "telemetry_probe_available": 0,
-                        "telemetry_probe_total": 2,
+                        "telemetry_probe_total": 3,
                     },
                 }
             ]
@@ -156,6 +156,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
             [
                 {"label": "site_ports", "purpose": "Per-site switch port telemetry", "path": "/ports", "available": False, "status": 404, "itemCount": 0},
                 {"label": "wireless_radios", "purpose": "Wireless radio telemetry", "path": "/wireless/radios", "available": False, "status": 404, "itemCount": 0},
+                {"label": "device_ports_switch", "purpose": "Per-switch port telemetry", "path": "/devices/switch-1/ports", "available": False, "status": 404, "itemCount": 0, "sampleDevice": "USW-48 (USW-Pro-48-PoE)", "role": "switch"},
             ]
         ),
         encoding="utf-8",
@@ -223,6 +224,8 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "capability flag only" in html
     assert "API Telemetry Probe Results" in html
     assert "site_ports" in html
+    assert "device_ports_switch" in html
+    assert "USW-48 (USW-Pro-48-PoE) [switch]" in html
     assert "HTTP 404" in html
     assert "Configuration Backup Completeness" in html
     assert "Networks / VLANs" in html
@@ -234,7 +237,7 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Staff (VLAN 100)" in html
     assert "U7-Pro-1 (U7-Pro): 1" in html
     assert "not an authoritative DHCP lease export" in html
-    assert "0 / 2 available" in html
+    assert "0 / 3 available" in html
     assert "captured empty" in html
     assert "not exposed (HTTP 404)" in html
     assert "UniFi Executive Summary" in exec_html
@@ -378,6 +381,8 @@ def test_unifi_collect_telemetry_probe_records_available_and_missing_paths(tmp_p
         def get_json(self, path, params=None):
             if path.endswith("/sites/site-1/ports"):
                 return {"data": [{"port": 1}, {"port": 2}]}
+            if path.endswith("/devices/switch-1/ports"):
+                return {"data": [{"port": 1}]}
             raise UniFiRequestError("HTTP 404", status=404)
 
     results = _collect_telemetry_probes(
@@ -385,7 +390,13 @@ def test_unifi_collect_telemetry_probe_records_available_and_missing_paths(tmp_p
         "/network",
         "site-1",
         "Main",
-        [{"id": "device-1", "interfaces": ["ports", "radios"]}],
+        [
+            {"id": "combo-1", "name": "IW HD", "model": "IW HD", "state": "ONLINE", "interfaces": ["ports", "radios"], "features": ["switching", "accessPoint"]},
+            {"id": "ap-1", "name": "U7-Pro-1", "model": "U7-Pro", "interfaces": ["ports", "radios"], "features": ["accessPoint"]},
+            {"id": "old-switch", "name": "Old Switch", "model": "USW Flex", "state": "OFFLINE", "interfaces": ["ports"], "features": ["switching"]},
+            {"id": "switch-1", "name": "USW-48", "model": "USW-Pro-48-PoE", "state": "ONLINE", "interfaces": ["ports"], "features": ["switching"]},
+            {"id": "gateway-1", "name": "Gateway", "model": "UCG Ultra", "interfaces": ["ports"], "features": ["switching"]},
+        ],
         tmp_path,
     )
     by_label = {result["label"]: result for result in results}
@@ -394,4 +405,9 @@ def test_unifi_collect_telemetry_probe_records_available_and_missing_paths(tmp_p
     assert by_label["site_ports"]["itemCount"] == 2
     assert (tmp_path / by_label["site_ports"]["file"]).exists()
     assert by_label["site_radios"]["status"] == 404
-    assert by_label["device_ports"]["path"].endswith("/devices/device-1/ports")
+    assert by_label["device_ports_switch"]["path"].endswith("/devices/switch-1/ports")
+    assert by_label["device_ports_switch"]["available"] is True
+    assert by_label["device_ports_switch"]["sampleDevice"] == "USW-48 (USW-Pro-48-PoE)"
+    assert by_label["device_ports_gateway"]["path"].endswith("/devices/gateway-1/ports")
+    assert by_label["device_ports_ap"]["path"].endswith("/devices/ap-1/ports")
+    assert by_label["device_radios_ap"]["path"].endswith("/devices/ap-1/radios")
