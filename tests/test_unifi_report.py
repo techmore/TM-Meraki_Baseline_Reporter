@@ -191,16 +191,20 @@ def test_unifi_report_renders_inventory_and_network_sections(tmp_path: Path):
     assert "Recommended Priorities" in html
     assert "Client concentration requires validation" in html
     assert "Validate client concentration" in html
+    assert "Client access policy appears flat" in html
+    assert "Review UniFi client access policy design" in html
     assert "Data Confidence Snapshot" in html
     assert "Health at a Glance" in html
     assert "How to Use This Report" in html
     assert "Security Baseline" in html
+    assert "Client access policy" in html
     assert "Port and radio diagnostics are low-confidence" in html
     assert "Client Analysis" in html
     assert "Client Overview Summary" in html
     assert "Client Concentration by Uplink" in html
     assert "Recommendations &amp; Implementation Plan" in html
     assert "Validate concentrated client load" in html
+    assert "Review client access policy segmentation" in html
     assert "Choose a deeper diagnostics source" in html
     assert "Hardware Refresh &amp; Budget Planning" in html
     assert "Refresh Action Summary" in html

@@ -128,6 +128,8 @@ This project is currently functional as a Python reporting pipeline. The immedia
   unpriced refresh scope, and summarize refresh/retain/excluded actions.~~
 - ~~Promote high client concentration on one AP/switch into UniFi executive
   risks, priorities, and implementation planning.~~
+- ~~Promote flat DEFAULT client access policy usage into UniFi executive,
+  security baseline, and implementation planning sections.~~
 - Add deeper UniFi switch/AP port and radio telemetry when the controller API
   exposes it.
 

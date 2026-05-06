@@ -1070,6 +1070,17 @@ def _client_concentration_findings(all_clients: List[Dict[str, Any]], device_nam
     return sorted(findings, key=lambda item: (-int(item["share"]), -int(item["count"]), str(item["uplink"])))
 
 
+def _default_client_access_finding(all_clients: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    total = len(all_clients)
+    if total < 10:
+        return None
+    default_count = sum(1 for client in all_clients if _access_label(client).strip().upper() == "DEFAULT")
+    share = round((default_count / total) * 100) if total else 0
+    if default_count >= 10 and share >= 80:
+        return {"default": default_count, "total": total, "share": share}
+    return None
+
+
 def _top_risks(
     *,
     all_devices: List[Dict[str, Any]],
@@ -1094,6 +1105,10 @@ def _top_risks(
     if client_concentration:
         finding = client_concentration[0]
         risks.append(f"Client concentration requires validation - {finding['uplink']} has {finding['count']} of {finding['total']} captured clients ({finding['share']}%), which may indicate capacity pressure or a single-device dependency.")
+
+    default_access = _default_client_access_finding(all_clients)
+    if default_access:
+        risks.append(f"Client access policy appears flat - {default_access['default']} of {default_access['total']} captured clients ({default_access['share']}%) use DEFAULT access; validate guest, IoT, staff, and trusted-device separation.")
 
     risks.extend(_wifi_security_weak(all_wifi)[:3])
 
@@ -1137,6 +1152,9 @@ def _recommended_priorities(
     if client_concentration:
         finding = client_concentration[0]
         priorities.append(f"Short-term (2-6 weeks): Validate client concentration on {finding['uplink']} ({finding['count']} of {finding['total']} clients) with controller UI metrics, physical placement, and uplink capacity before refresh planning.")
+    default_access = _default_client_access_finding(all_clients)
+    if default_access:
+        priorities.append(f"Short-term (2-6 weeks): Review UniFi client access policy design because {default_access['default']} of {default_access['total']} captured clients use DEFAULT access.")
     if _wifi_security_weak(all_wifi):
         priorities.append("Short-term (2-6 weeks): Review SSID security and migrate appropriate production WLANs toward WPA3, private PSK, or 802.1X instead of shared WPA2 Personal.")
     if all_firewall_policies and any(not _as_bool(policy.get("loggingEnabled")) for policy in all_firewall_policies):
@@ -1169,6 +1187,7 @@ def _data_confidence_rows(
 
 def _security_baseline_rows(
     *,
+    all_clients: List[Dict[str, Any]],
     all_wifi: List[Dict[str, Any]],
     all_firewall_policies: List[Dict[str, Any]],
     all_dns_policies: List[Dict[str, Any]],
@@ -1178,6 +1197,7 @@ def _security_baseline_rows(
     weak_wifi = _wifi_security_weak(all_wifi)
     logging_enabled = sum(1 for policy in all_firewall_policies if _as_bool(policy.get("loggingEnabled")))
     broad_allow = _broad_allow_policy_summary(all_firewall_policies)
+    default_access = _default_client_access_finding(all_clients)
     if broad_allow.get("user", 0):
         broad_allow_status = "Review"
     elif broad_allow.get("total", 0):
@@ -1186,6 +1206,15 @@ def _security_baseline_rows(
         broad_allow_status = "Not detected"
     return [
         ["Network segmentation", "Review" if network_count <= 2 else "Present", f"{_plural(network_count, 'network/VLAN definition')} captured."],
+        [
+            "Client access policy",
+            "Review" if default_access else ("Present" if all_clients else "Not captured"),
+            (
+                f"{default_access['default']} of {default_access['total']} captured clients ({default_access['share']}%) use DEFAULT access; validate guest, IoT, staff, and trusted-device separation."
+                if default_access
+                else (f"Access policy mix: {_fmt_counts(_count_by(all_clients, _access_label))}." if all_clients else "No client access records captured.")
+            ),
+        ],
         ["Wireless authentication", "Review" if weak_wifi else ("Present" if all_wifi else "Missing"), "; ".join(weak_wifi[:2]) if weak_wifi else f"{_plural(len(all_wifi), 'SSID')} captured."],
         ["Firewall rules", "Present" if all_firewall_policies else "Missing", f"{_plural(len(all_firewall_policies), 'policy', 'policies')} captured."],
         ["Firewall logging", "Review" if all_firewall_policies and logging_enabled < len(all_firewall_policies) else "Present", f"{logging_enabled} of {len(all_firewall_policies)} policies have logging enabled."],
@@ -1245,6 +1274,7 @@ def _implementation_plan_rows(
     weak_wifi = _wifi_security_weak(all_wifi)
     logging_disabled = sum(1 for policy in all_firewall_policies if not _as_bool(policy.get("loggingEnabled")))
     client_concentration = _client_concentration_findings(all_clients, device_names)
+    default_access = _default_client_access_finding(all_clients)
 
     if offline:
         rows.append(["Immediate", "0-2 weeks", "Validate offline inventory", f"{', '.join(offline[:6])}", "IT operations"])
@@ -1253,6 +1283,8 @@ def _implementation_plan_rows(
     if client_concentration:
         finding = client_concentration[0]
         rows.append(["Short-term", "2-6 weeks", "Validate concentrated client load", f"{finding['uplink']} has {finding['count']} of {finding['total']} captured clients ({finding['share']}%)", "Network engineering"])
+    if default_access:
+        rows.append(["Short-term", "2-6 weeks", "Review client access policy segmentation", f"{default_access['default']} of {default_access['total']} captured clients use DEFAULT access", "Security / network engineering"])
     if weak_wifi:
         rows.append(["Short-term", "2-6 weeks", "Review SSID security posture", "; ".join(weak_wifi[:2]), "Security / network engineering"])
     if logging_disabled:
@@ -1900,6 +1932,7 @@ def build_report(source_dir: str, output_dir: str) -> Dict[str, str]:
         _table(
             ["Control Area", "Status", "Evidence / Interpretation"],
             _security_baseline_rows(
+                all_clients=all_clients,
                 all_wifi=site_payloads["wifi"],
                 all_firewall_policies=site_payloads["firewall_policies"],
                 all_dns_policies=site_payloads["dns_policies"],
