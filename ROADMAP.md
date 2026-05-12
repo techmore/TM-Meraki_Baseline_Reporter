@@ -137,6 +137,30 @@ This project is currently functional as a Python reporting pipeline. The immedia
 - Add deeper UniFi switch/AP port and radio telemetry when the controller API
   exposes it.
 
+## Phase 7: Codebase Audit and Lean Enhancements - Planned
+
+Goal: audit the working Meraki and UniFi reporting codebase for improvements
+that reduce maintenance burden, improve report reliability, and make future
+enhancements safer without disrupting the default `./run.sh` and
+`./unifi/run.sh` workflows.
+
+- Map the current pipeline modules, generated artifacts, raw backup locations,
+  and test coverage so cleanup work does not regress report generation.
+- Review `run.sh`, `unifi/run.sh`, `reporting/`, `unifi/`, reference JSON, and
+  tests for duplicated logic, overly large functions, weak boundaries, stale
+  compatibility paths, and low-risk extraction opportunities.
+- Identify report-generation quality risks, especially PDF layout pressure,
+  overly wide tables, brittle HTML string assembly, missing fixture coverage,
+  and places where unavailable API fields could be mistaken for network issues.
+- Audit API collection and backup handling for clear separation between
+  customer-specific data, generated reports, reusable references, and source
+  code.
+- Produce a prioritized audit summary with `do now`, `defer`, and `do not
+  change` categories before broad refactors.
+- Implement only surgical cleanup after the audit: small extractions, stronger
+  tests, clearer names, dead-code removal, and documentation updates that keep
+  Meraki and UniFi report output behavior stable.
+
 ## Release Checklist
 
 - Run `./install.sh`.
