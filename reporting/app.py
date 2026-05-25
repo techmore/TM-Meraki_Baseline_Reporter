@@ -809,12 +809,18 @@ def build_org_report(
     # Older backups used wireless_clients.json from a now-unreliable wireless-only path.
     def _flatten_client_records(raw: Any) -> List[Dict[str, Any]]:
         if isinstance(raw, dict):
-            return [
-                cl for clients in raw.values()
-                if isinstance(clients, list)
-                for cl in clients
-                if isinstance(cl, dict)
-            ]
+            rows: List[Dict[str, Any]] = []
+            for net_id, clients in raw.items():
+                if not isinstance(clients, list):
+                    continue
+                for cl in clients:
+                    if not isinstance(cl, dict):
+                        continue
+                    row = dict(cl)
+                    if not (row.get("networkId") or (row.get("network") or {}).get("id")):
+                        row["networkId"] = str(net_id)
+                    rows.append(row)
+            return rows
         if isinstance(raw, list):
             return [cl for cl in raw if isinstance(cl, dict)]
         return []

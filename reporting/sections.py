@@ -764,17 +764,33 @@ def _build_ap_spectrum_report(
         if isinstance(channel_util, dict) and channel_util.get("error")
         else ""
     )
+    client_record_network_tagged = False
     if isinstance(client_records, dict):
-        client_record_list = [
-            client for clients in client_records.values()
-            if isinstance(clients, list)
-            for client in clients
-            if isinstance(client, dict)
-        ]
+        client_record_list = []
+        for net_id, clients in client_records.items():
+            if not isinstance(clients, list):
+                continue
+            for client in clients:
+                if not isinstance(client, dict):
+                    continue
+                row = dict(client)
+                if not (row.get("networkId") or (row.get("network") or {}).get("id")):
+                    row["networkId"] = str(net_id)
+                client_record_list.append(row)
     elif isinstance(client_records, list):
         client_record_list = [client for client in client_records if isinstance(client, dict)]
     else:
         client_record_list = []
+    wireless_client_networks: set[str] = set()
+    for client in client_record_list:
+        net_id = str(client.get("networkId") or (client.get("network") or {}).get("id") or "")
+        if net_id:
+            client_record_network_tagged = True
+        connection = str(client.get("recentDeviceConnection") or "").lower()
+        if connection and connection != "wireless":
+            continue
+        if net_id:
+            wireless_client_networks.add(net_id)
 
     def _short_error(error: str, limit: int = 260) -> str:
         if not error:
@@ -1332,10 +1348,13 @@ def _build_ap_spectrum_report(
                 }
         return {"assoc": 0, "auth": 0, "success": 0}
 
-    def _wireless_client_load(serial: str) -> Dict[str, Any]:
+    def _wireless_client_load(serial: str, net_id: str) -> Dict[str, Any]:
         recent = 0
         online = 0
         for client in client_record_list:
+            client_net_id = str(client.get("networkId") or (client.get("network") or {}).get("id") or "")
+            if client_net_id and client_net_id != net_id:
+                continue
             if str(client.get("recentDeviceSerial") or "") != serial:
                 continue
             connection = str(client.get("recentDeviceConnection") or "").lower()
@@ -1344,10 +1363,13 @@ def _build_ap_spectrum_report(
             recent += 1
             if str(client.get("status") or "").lower() == "online":
                 online += 1
+        available = bool(client_record_list)
+        if client_record_network_tagged and net_id:
+            available = net_id in wireless_client_networks
         return {
             "recent": recent,
             "online": online,
-            "available": bool(client_record_list),
+            "available": available,
         }
 
     channel_util_rows = channel_util if isinstance(channel_util, list) else []
@@ -1398,7 +1420,7 @@ def _build_ap_spectrum_report(
                     "bubble_cls": bubble_cls,
                     "severity": severity,
                     "clients": clients,
-                    "client_load": _wireless_client_load(serial),
+                    "client_load": _wireless_client_load(serial, net_id),
                     "log_context": log_context,
                 }
             )
@@ -1437,7 +1459,7 @@ def _build_ap_spectrum_report(
                 "bubble_cls": bubble_cls,
                 "severity": severity,
                 "clients": _client_stats(serial, net_id),
-                "client_load": _wireless_client_load(serial),
+                "client_load": _wireless_client_load(serial, net_id),
                 "log_context": log_context,
             }
         )
@@ -1549,17 +1571,53 @@ def _build_ap_spectrum_report(
         if not level:
             return None
         return {
+            "tier": "Likely overdeployment",
             "level": level,
             "wifi": wifi,
             "total": total,
             "recentClients": recent_clients,
             "onlineClients": online_clients,
+            "clientLoadAvailable": True,
+            "candidateCount": len(pressure_candidates),
+            "candidates": pressure_candidates,
+        }
+
+    def _rf_overlap_signal(ap: Dict[str, Any]) -> Dict[str, Any] | None:
+        stats = ap.get("worst_stats") or {}
+        if not stats or stats.get("non_wifi", 0.0) >= 15:
+            return None
+        wifi = stats.get("wifi", 0.0)
+        if wifi < 30:
+            return None
+        candidates = _same_band_candidates(ap, limit=6)
+        pressure_candidates = [
+            (other, cand_stats, bubble)
+            for other, cand_stats, bubble, _ in candidates
+            if cand_stats.get("wifi", 0.0) >= 25
+        ]
+        if not pressure_candidates:
+            return None
+        load = ap.get("client_load") or {}
+        if load.get("available") and int(load.get("recent") or 0) > 5:
+            return None
+        return {
+            "tier": "RF-only overlap",
+            "level": "Watch",
+            "wifi": wifi,
+            "total": stats.get("total", 0.0),
+            "recentClients": int(load.get("recent") or 0),
+            "onlineClients": int(load.get("online") or 0),
+            "clientLoadAvailable": bool(load.get("available")),
             "candidateCount": len(pressure_candidates),
             "candidates": pressure_candidates,
         }
 
     def _overdeployment_action(ap: Dict[str, Any], signal: Dict[str, Any]) -> str:
         cap = _ap_capability(ap)
+        if signal.get("tier") == "RF-only overlap":
+            if cap["generation"] in {"Legacy", "Wi-Fi 5-era"} or "EOL" in str(ap.get("name") or "").upper():
+                return "Field-check EOL/legacy RF pair; remove/replace if coverage allows."
+            return "Field-check pair; collect client load before removing APs."
         if cap["generation"] in {"Legacy", "Wi-Fi 5-era"} or "EOL" in str(ap.get("name") or "").upper():
             return "Retire/replace least-used legacy AP; rerun."
         if signal["level"] == "High":
@@ -1570,18 +1628,30 @@ def _build_ap_spectrum_report(
 
     def _overdeployment_rows(items: List[Tuple[Dict[str, Any], Dict[str, Any]]]) -> str:
         rows = []
-        for ap, signal in items[:25]:
+        display_items = items
+        if len(items) > 25:
+            rf_only_items = [item for item in items if item[1].get("tier") == "RF-only overlap"]
+            likely_items = [item for item in items if item[1].get("tier") != "RF-only overlap"]
+            rf_limit = min(len(rf_only_items), 10)
+            likely_limit = max(0, 25 - rf_limit)
+            display_items = likely_items[:likely_limit] + rf_only_items[:rf_limit]
+        for ap, signal in display_items:
             cand_text = "; ".join(
                 f"{other['name']} ({stats['wifi']:.1f}% Wi-Fi)"
                 for other, stats, _ in signal["candidates"][:3]
             ) or "No high-pressure candidates listed"
+            client_text = (
+                f"{signal['recentClients']} recent / {signal['onlineClients']} online"
+                if signal.get("clientLoadAvailable")
+                else "Client load not captured"
+            )
             rows.append(
                 "<tr>"
                 f"<td>{_he(ap['site'])}</td>"
                 f"<td>{_he(ap['name'])}<br><code>{_he(ap['serial'])}</code></td>"
                 f"<td>{_he((ap['worst_band'] + ' GHz') if ap['worst_band'] else 'No data')}</td>"
-                f"<td><strong>{_he(signal['level'])}</strong><br>{signal['wifi']:.1f}% Wi-Fi / {signal['total']:.1f}% total</td>"
-                f"<td>{signal['recentClients']} recent / {signal['onlineClients']} online</td>"
+                f"<td><strong>{_he(signal['tier'])}</strong><br>{_he(signal['level'])}: {signal['wifi']:.1f}% Wi-Fi / {signal['total']:.1f}% total</td>"
+                f"<td>{_he(client_text)}</td>"
                 f"<td>{_he(cand_text)}</td>"
                 f"<td>{_he(_overdeployment_action(ap, signal))}</td>"
                 "</tr>"
@@ -1680,8 +1750,18 @@ def _build_ap_spectrum_report(
         for signal in [_overdeployment_signal(ap)]
         if signal
     ]
-    overdeployment_candidates.sort(
+    overdeployment_serials = {ap["serial"] for ap, _ in overdeployment_candidates}
+    rf_overlap_candidates = [
+        (ap, signal)
+        for ap in with_telemetry
+        if ap["serial"] not in overdeployment_serials
+        for signal in [_rf_overlap_signal(ap)]
+        if signal
+    ]
+    overdeployment_all = overdeployment_candidates + rf_overlap_candidates
+    overdeployment_all.sort(
         key=lambda item: (
+            {"Likely overdeployment": 0, "RF-only overlap": 1}.get(item[1].get("tier"), 9),
             {"High": 0, "Medium": 1, "Watch": 2}.get(item[1]["level"], 9),
             -item[1]["wifi"],
             item[1]["recentClients"],
@@ -1691,7 +1771,11 @@ def _build_ap_spectrum_report(
     )
     if overdeployment_candidates:
         executive_points.append(
-            f"{len(overdeployment_candidates)} AP(s) look overdeployed: high same-band Wi-Fi airtime, low client load, and nearby same-band candidates. Focus: {_overdeployment_site_summary(overdeployment_candidates)}."
+            f"{len(overdeployment_candidates)} AP(s) look overdeployed: high same-band Wi-Fi airtime, low client load, and same-network same-band candidates. Focus: {_overdeployment_site_summary(overdeployment_candidates)}."
+        )
+    if rf_overlap_candidates:
+        executive_points.append(
+            f"{len(rf_overlap_candidates)} additional RF-only overlap candidate(s) need client-load validation before removal decisions. Focus: {_overdeployment_site_summary(rf_overlap_candidates)}."
         )
 
     executive_summary_html = f"""
@@ -1708,10 +1792,10 @@ def _build_ap_spectrum_report(
 
     overdeployment_html = f"""
       <h3>Likely Overdeployment Clusters</h3>
-      <p class="muted">Meraki-only triage. These APs show RF contention without enough client load to justify more APs. Field-check this list before buying APs or lowering power again.</p>
+      <p class="muted">Meraki-only triage. Likely rows combine RF pressure with low client load. RF-only rows show same-network same-band overlap, but client load is missing or inconclusive, so field-check before removal.</p>
       <table class="data dense">
-        <thead><tr><th>Site</th><th>AP</th><th>Band</th><th>Signal</th><th>Clients</th><th>Cluster Evidence</th><th>Action</th></tr></thead>
-        <tbody>{_overdeployment_rows(overdeployment_candidates)}</tbody>
+        <thead><tr><th>Site</th><th>AP</th><th>Band</th><th>Finding</th><th>Clients</th><th>Same-Band Evidence</th><th>Action</th></tr></thead>
+        <tbody>{_overdeployment_rows(overdeployment_all)}</tbody>
       </table>
     """
 

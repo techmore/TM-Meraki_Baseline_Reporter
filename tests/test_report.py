@@ -820,15 +820,33 @@ class TestBuildOrgReport:
                 shutil.copy(src, dst)
 
         devices = json.loads((tmp_path / "devices_availabilities.json").read_text(encoding="utf-8"))
-        devices.append(
-            {
-                "serial": "Q2AP-TEST-0003",
-                "name": "AP-1F-03",
-                "productType": "wireless",
-                "model": "MR46",
-                "status": "online",
-                "networkId": "N_test_001",
-            }
+        devices.extend(
+            [
+                {
+                    "serial": "Q2AP-TEST-0003",
+                    "name": "AP-1F-03",
+                    "productType": "wireless",
+                    "model": "MR46",
+                    "status": "online",
+                    "networkId": "N_test_001",
+                },
+                {
+                    "serial": "Q2AP-MAIN-0001",
+                    "name": "Main Campus Outdoor",
+                    "productType": "wireless",
+                    "model": "MR66",
+                    "status": "online",
+                    "network": {"id": "N_main_001", "name": "Main_Campus"},
+                },
+                {
+                    "serial": "Q2AP-MAIN-0002",
+                    "name": "Main Campus Lounge",
+                    "productType": "wireless",
+                    "model": "MR46",
+                    "status": "online",
+                    "network": {"id": "N_main_001", "name": "Main_Campus"},
+                },
+            ]
         )
         (tmp_path / "devices_availabilities.json").write_text(json.dumps(devices), encoding="utf-8")
 
@@ -863,6 +881,30 @@ class TestBuildOrgReport:
                         "serial": "Q2AP-TEST-0003",
                         "network": {"id": "N_test_001"},
                         "byBand": [],
+                    },
+                    {
+                        "serial": "Q2AP-MAIN-0001",
+                        "network": {"id": "N_main_001"},
+                        "byBand": [
+                            {
+                                "band": "2.4",
+                                "wifi": {"percentage": 33.7},
+                                "nonWifi": {"percentage": 1.2},
+                                "total": {"percentage": 35.5},
+                            }
+                        ],
+                    },
+                    {
+                        "serial": "Q2AP-MAIN-0002",
+                        "network": {"id": "N_main_001"},
+                        "byBand": [
+                            {
+                                "band": "2.4",
+                                "wifi": {"percentage": 31.9},
+                                "nonWifi": {"percentage": 0.6},
+                                "total": {"percentage": 32.5},
+                            }
+                        ],
                     },
                 ]
             ),
@@ -947,6 +989,9 @@ class TestBuildOrgReport:
         assert "high same-band Wi-Fi airtime, low client load" in html
         assert "1 recent / 1 online" in html
         assert "disable 2.4 GHz on the least-used AP" in html
+        assert "RF-only overlap" in html
+        assert "Client load not captured" in html
+        assert "Main_Campus" in html
         assert "Meraki Standards Basis" in html
         assert "RF Telemetry Gaps" in html
         assert "Online Missing RF" in html
