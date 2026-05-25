@@ -742,6 +742,7 @@ def _build_ap_spectrum_report(
     hardware_catalog: Optional[Dict[str, Any]] = None,
     wireless_design_reference: Optional[Dict[str, Any]] = None,
     wireless_event_log: Any = None,
+    client_records: Any = None,
 ) -> str:
     catalog_models = (
         hardware_catalog.get("models")
@@ -763,6 +764,17 @@ def _build_ap_spectrum_report(
         if isinstance(channel_util, dict) and channel_util.get("error")
         else ""
     )
+    if isinstance(client_records, dict):
+        client_record_list = [
+            client for clients in client_records.values()
+            if isinstance(clients, list)
+            for client in clients
+            if isinstance(client, dict)
+        ]
+    elif isinstance(client_records, list):
+        client_record_list = [client for client in client_records if isinstance(client, dict)]
+    else:
+        client_record_list = []
 
     def _short_error(error: str, limit: int = 260) -> str:
         if not error:
@@ -1320,6 +1332,24 @@ def _build_ap_spectrum_report(
                 }
         return {"assoc": 0, "auth": 0, "success": 0}
 
+    def _wireless_client_load(serial: str) -> Dict[str, Any]:
+        recent = 0
+        online = 0
+        for client in client_record_list:
+            if str(client.get("recentDeviceSerial") or "") != serial:
+                continue
+            connection = str(client.get("recentDeviceConnection") or "").lower()
+            if connection and connection != "wireless":
+                continue
+            recent += 1
+            if str(client.get("status") or "").lower() == "online":
+                online += 1
+        return {
+            "recent": recent,
+            "online": online,
+            "available": bool(client_record_list),
+        }
+
     channel_util_rows = channel_util if isinstance(channel_util, list) else []
     util_by_serial = {
         row.get("serial"): row
@@ -1368,6 +1398,7 @@ def _build_ap_spectrum_report(
                     "bubble_cls": bubble_cls,
                     "severity": severity,
                     "clients": clients,
+                    "client_load": _wireless_client_load(serial),
                     "log_context": log_context,
                 }
             )
@@ -1406,6 +1437,7 @@ def _build_ap_spectrum_report(
                 "bubble_cls": bubble_cls,
                 "severity": severity,
                 "clients": _client_stats(serial, net_id),
+                "client_load": _wireless_client_load(serial),
                 "log_context": log_context,
             }
         )
@@ -1490,6 +1522,82 @@ def _build_ap_spectrum_report(
             for other, stats, bubble, _ in candidates
         )
 
+    def _overdeployment_signal(ap: Dict[str, Any]) -> Dict[str, Any] | None:
+        stats = ap.get("worst_stats") or {}
+        if not stats or not (ap.get("client_load") or {}).get("available"):
+            return None
+        if stats.get("non_wifi", 0.0) >= 15:
+            return None
+        wifi = stats.get("wifi", 0.0)
+        total = stats.get("total", 0.0)
+        load = ap.get("client_load") or {}
+        recent_clients = int(load.get("recent") or 0)
+        online_clients = int(load.get("online") or 0)
+        candidates = _same_band_candidates(ap, limit=6)
+        pressure_candidates = [
+            (other, cand_stats, bubble)
+            for other, cand_stats, bubble, _ in candidates
+            if cand_stats.get("wifi", 0.0) >= 25
+        ]
+        level = ""
+        if wifi >= 40 and recent_clients <= 3 and pressure_candidates:
+            level = "High"
+        elif wifi >= 30 and recent_clients <= 5 and len(pressure_candidates) >= 2:
+            level = "Medium"
+        elif wifi >= 25 and recent_clients <= 2 and len(pressure_candidates) >= 2:
+            level = "Watch"
+        if not level:
+            return None
+        return {
+            "level": level,
+            "wifi": wifi,
+            "total": total,
+            "recentClients": recent_clients,
+            "onlineClients": online_clients,
+            "candidateCount": len(pressure_candidates),
+            "candidates": pressure_candidates,
+        }
+
+    def _overdeployment_action(ap: Dict[str, Any], signal: Dict[str, Any]) -> str:
+        cap = _ap_capability(ap)
+        if cap["generation"] in {"Legacy", "Wi-Fi 5-era"} or "EOL" in str(ap.get("name") or "").upper():
+            return "Retire/replace least-used legacy AP; rerun."
+        if signal["level"] == "High":
+            return "Field-check. Remove/relocate or disable 2.4 GHz on the least-used AP; rerun."
+        if signal["level"] == "Medium":
+            return "Pilot 2.4 GHz reduction on least-used AP; rerun."
+        return "Watch; retest after RF-profile changes."
+
+    def _overdeployment_rows(items: List[Tuple[Dict[str, Any], Dict[str, Any]]]) -> str:
+        rows = []
+        for ap, signal in items[:25]:
+            cand_text = "; ".join(
+                f"{other['name']} ({stats['wifi']:.1f}% Wi-Fi)"
+                for other, stats, _ in signal["candidates"][:3]
+            ) or "No high-pressure candidates listed"
+            rows.append(
+                "<tr>"
+                f"<td>{_he(ap['site'])}</td>"
+                f"<td>{_he(ap['name'])}<br><code>{_he(ap['serial'])}</code></td>"
+                f"<td>{_he((ap['worst_band'] + ' GHz') if ap['worst_band'] else 'No data')}</td>"
+                f"<td><strong>{_he(signal['level'])}</strong><br>{signal['wifi']:.1f}% Wi-Fi / {signal['total']:.1f}% total</td>"
+                f"<td>{signal['recentClients']} recent / {signal['onlineClients']} online</td>"
+                f"<td>{_he(cand_text)}</td>"
+                f"<td>{_he(_overdeployment_action(ap, signal))}</td>"
+                "</tr>"
+            )
+        if not rows:
+            return '<tr><td colspan="7" class="empty-state">No likely overdeployment clusters were detected from combined RF and client-load telemetry.</td></tr>'
+        return "".join(rows)
+
+    def _overdeployment_site_summary(items: List[Tuple[Dict[str, Any], Dict[str, Any]]]) -> str:
+        if not items:
+            return "No site crossed the likely-overdeployment threshold in this telemetry window."
+        counts: Dict[str, int] = {}
+        for ap, _ in items:
+            counts[ap["site"]] = counts.get(ap["site"], 0) + 1
+        return "; ".join(f"{site}: {count}" for site, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:5])
+
     def _action_type(ap: Dict[str, Any]) -> str:
         stats = ap["worst_stats"] or {}
         if not ap["bands"]:
@@ -1566,6 +1674,26 @@ def _build_ap_spectrum_report(
             "Overdeployment check: current telemetry does not show widespread severe RF pressure. Use before/after RF-profile testing and client-density review before buying more APs or lowering power further."
         )
 
+    overdeployment_candidates = [
+        (ap, signal)
+        for ap in with_telemetry
+        for signal in [_overdeployment_signal(ap)]
+        if signal
+    ]
+    overdeployment_candidates.sort(
+        key=lambda item: (
+            {"High": 0, "Medium": 1, "Watch": 2}.get(item[1]["level"], 9),
+            -item[1]["wifi"],
+            item[1]["recentClients"],
+            item[0]["site"],
+            item[0]["name"],
+        )
+    )
+    if overdeployment_candidates:
+        executive_points.append(
+            f"{len(overdeployment_candidates)} AP(s) look overdeployed: high same-band Wi-Fi airtime, low client load, and nearby same-band candidates. Focus: {_overdeployment_site_summary(overdeployment_candidates)}."
+        )
+
     executive_summary_html = f"""
       <div class="summary-card">
         <div class="summary-title">Executive Summary / Recommended Action</div>
@@ -1576,6 +1704,15 @@ def _build_ap_spectrum_report(
           </ul>
         </div>
       </div>
+    """
+
+    overdeployment_html = f"""
+      <h3>Likely Overdeployment Clusters</h3>
+      <p class="muted">Meraki-only triage. These APs show RF contention without enough client load to justify more APs. Field-check this list before buying APs or lowering power again.</p>
+      <table class="data dense">
+        <thead><tr><th>Site</th><th>AP</th><th>Band</th><th>Signal</th><th>Clients</th><th>Cluster Evidence</th><th>Action</th></tr></thead>
+        <tbody>{_overdeployment_rows(overdeployment_candidates)}</tbody>
+      </table>
     """
 
     action_scope: List[Dict[str, Any]] = []
@@ -1875,6 +2012,7 @@ def _build_ap_spectrum_report(
         <div class="kpi"><div class="kpi-label">Dormant/Offline</div><div class="kpi-value">{len(inactive_no_telemetry)}</div><div class="kpi-note">Inventory cleanup / inactive APs</div></div>
       </div>
       {executive_summary_html}
+      {overdeployment_html}
       {action_matrix_html}
       {telemetry_warning_html}
       <table class="data">

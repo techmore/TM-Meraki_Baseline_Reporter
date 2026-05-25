@@ -1557,6 +1557,7 @@ def build_org_report(
         hardware_catalog,
         wireless_design_reference,
         wireless_event_log,
+        client_records,
     )
     config_coverage_html = _build_config_coverage_section(org_dir, networks)
     budget_forecast_html = _build_budget_forecast_section(inventory_summary, pricing_payload)

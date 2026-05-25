@@ -924,11 +924,29 @@ class TestBuildOrgReport:
             ),
             encoding="utf-8",
         )
+        (tmp_path / "network_clients.json").write_text(
+            json.dumps(
+                {
+                    "N_test_001": [
+                        {
+                            "recentDeviceSerial": "Q2AP-TEST-0001",
+                            "recentDeviceConnection": "Wireless",
+                            "status": "Online",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
 
         html = build_org_report(str(tmp_path), "AP Spectrum Test", report_kind="ap_spectrum")
         assert "AP Spectrum Availability &amp; Interference Report" in html
         assert html.count("ap-unit-page") >= 2
         assert "Executive Summary / Recommended Action" in html
+        assert "Likely Overdeployment Clusters" in html
+        assert "high same-band Wi-Fi airtime, low client load" in html
+        assert "1 recent / 1 online" in html
+        assert "disable 2.4 GHz on the least-used AP" in html
         assert "Meraki Standards Basis" in html
         assert "RF Telemetry Gaps" in html
         assert "Online Missing RF" in html
