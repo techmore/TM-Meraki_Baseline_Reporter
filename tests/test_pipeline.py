@@ -1,12 +1,14 @@
 import os
 import subprocess
 import sys
+import json
 from pathlib import Path
 
 import pytest
 
 import merge_recommendations as mr
 import ollama_review as orv
+from reporting import report_inventory
 from reporting import health
 
 
@@ -111,6 +113,29 @@ class TestOllamaReview:
         assert "# AI-Enhanced Network Recommendations" in out
         assert "## Review" in out
 
+    def test_main_accepts_model_and_chunk_size_args(self, monkeypatch, tmp_path):
+        master = tmp_path / "master_recommendations.md"
+        master.write_text("recommendation body", encoding="utf-8")
+        monkeypatch.setattr(orv, "BACKUPS_DIR", str(tmp_path))
+        monkeypatch.setattr(orv, "MODEL", "original-model")
+        monkeypatch.setattr(orv, "MAX_INPUT_CHARS", 50_000)
+        monkeypatch.setattr(orv, "ollama_available", lambda: True)
+        monkeypatch.setattr(orv, "review_content", lambda content: f"{orv.MODEL}:{orv.MAX_INPUT_CHARS}")
+
+        assert orv.main(["--model", "test-model:1b", "--max-input-chars", "1234"]) == 0
+        out = (tmp_path / "recommendations_ai_enhanced.md").read_text(encoding="utf-8")
+        assert "_Model: test-model:1b" in out
+        assert "test-model:1b:1234" in out
+
+    def test_main_rejects_invalid_chunk_size_arg(self, capsys):
+        assert orv.main(["--max-input-chars", "0"]) == 2
+        assert "max_input_chars must be greater than zero" in capsys.readouterr().err
+
+    def test_main_reports_invalid_env_chunk_size_without_import_failure(self, monkeypatch, capsys):
+        monkeypatch.setattr(orv, "CONFIG_ERRORS", ["OLLAMA_MAX_INPUT_CHARS must be an integer"])
+        assert orv.main([]) == 2
+        assert "OLLAMA_MAX_INPUT_CHARS must be an integer" in capsys.readouterr().err
+
 
 class TestRunShSmoke:
     def test_help_exits_zero(self):
@@ -124,6 +149,9 @@ class TestRunShSmoke:
         assert result.returncode == 0
         assert "Usage: ./run.sh [options]" in result.stdout
         assert "--demo-report" in result.stdout
+        assert "--fixed-now" in result.stdout
+        assert "--reports-dir" in result.stdout
+        assert "--keep-html" in result.stdout
 
     def test_unknown_flag_exits_two(self):
         result = subprocess.run(
@@ -135,6 +163,67 @@ class TestRunShSmoke:
         )
         assert result.returncode == 2
         assert "Unknown option" in result.stderr
+
+    def test_model_flag_requires_value(self):
+        result = subprocess.run(
+            ["bash", str(PROJECT_ROOT / "run.sh"), "--model"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 2
+        assert "Missing value for --model" in result.stderr
+
+    def test_fixed_now_flag_requires_value(self):
+        result = subprocess.run(
+            ["bash", str(PROJECT_ROOT / "run.sh"), "--fixed-now"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 2
+        assert "Missing value for --fixed-now" in result.stderr
+
+    def test_reports_dir_flag_requires_value(self):
+        result = subprocess.run(
+            ["bash", str(PROJECT_ROOT / "run.sh"), "--reports-dir"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 2
+        assert "Missing value for --reports-dir" in result.stderr
+
+    def test_fixed_now_rejects_invalid_value(self):
+        result = subprocess.run(
+            ["bash", str(PROJECT_ROOT / "run.sh"), "--fixed-now", "not-a-date", "--health-check"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 2
+        assert "Invalid value for --fixed-now" in result.stderr
+
+    def test_demo_report_accepts_fixed_now(self):
+        demo_output = PROJECT_ROOT / "backups" / ".demo" / "Fixture_Demo_Org"
+        result = subprocess.run(
+            [
+                "bash", str(PROJECT_ROOT / "run.sh"),
+                "--demo-report",
+                "--fixed-now", "2026-05-02T21:30:00",
+                "--no-open",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 0
+        assert (demo_output / "Fixture_Demo_Org_Complete_Report_2026-05-02.html").exists()
 
     def test_health_check_flag_exits_zero_for_report_only(self):
         result = subprocess.run(
@@ -164,6 +253,71 @@ class TestHealthChecks:
         assert by_name["Org backups"].status == "ok"
 
 
+class TestReportInventory:
+    def _write_expected_deliverables(self, org_dir: Path) -> None:
+        org_dir.mkdir(parents=True)
+        aliases = {
+            "report.pdf": "Demo_Org_Complete_Report_2026-05-02.pdf",
+            "report_exec_summary.pdf": "Demo_Org_Executive_Summary_Report_2026-05-02.pdf",
+            "report_backup_settings.pdf": "Demo_Org_Backup_Settings_Report_2026-05-02.pdf",
+            "report_battery_backup.pdf": "Demo_Org_Battery_Backup_Pricing_Calculation_Report_2026-05-02.pdf",
+            "report_ap_spectrum.pdf": "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf",
+            "ups_switch_power_plan.json": "Demo_Org_UPS_Switch_Power_Plan_Report_2026-05-02.json",
+        }
+        for compat, named in aliases.items():
+            (org_dir / compat).write_text("payload", encoding="utf-8")
+            (org_dir / named).write_text("payload", encoding="utf-8")
+
+    def test_inventory_accepts_complete_latest_report_set(self, tmp_path, capsys):
+        org_dir = tmp_path / "reports" / "latest" / "Demo_Org"
+        self._write_expected_deliverables(org_dir)
+
+        assert report_inventory.main(["--reports-dir", str(tmp_path / "reports")]) == 0
+
+        output = capsys.readouterr().out
+        assert "Demo_Org: 6/6 expected deliverables" in output
+        assert "Battery backup" in output
+        assert "UPS switch power plan" in output
+        assert "Manifest:" in output
+        assert "Index:" in output
+
+        manifest = json.loads((tmp_path / "reports" / "latest" / "report_inventory.json").read_text(encoding="utf-8"))
+        assert manifest["status"] == "ok"
+        assert manifest["orgCount"] == 1
+        assert manifest["orgs"][0]["presentCount"] == 6
+        assert manifest["orgs"][0]["deliverables"][0]["compatName"] == "report.pdf"
+        assert manifest["orgs"][0]["deliverables"][0]["namedPath"].endswith(
+            "Demo_Org_Complete_Report_2026-05-02.pdf"
+        )
+        index = (tmp_path / "reports" / "latest" / "index.html").read_text(encoding="utf-8")
+        assert "TM Meraki Report Inventory" in index
+        assert 'href="Demo_Org/report.pdf"' in index
+        assert "Demo_Org_Complete_Report_2026-05-02.pdf" in index
+
+    def test_inventory_fails_when_expected_report_is_missing(self, tmp_path, capsys):
+        org_dir = tmp_path / "reports" / "latest" / "Demo_Org"
+        self._write_expected_deliverables(org_dir)
+        (org_dir / "report_ap_spectrum.pdf").unlink()
+
+        assert report_inventory.main(["--reports-dir", str(tmp_path / "reports")]) == 1
+
+        output = capsys.readouterr().out
+        assert "Demo_Org: 5/6 expected deliverables" in output
+        assert "MISSING  AP spectrum" in output
+
+        manifest = json.loads((tmp_path / "reports" / "latest" / "report_inventory.json").read_text(encoding="utf-8"))
+        assert manifest["status"] == "missing"
+        ap_spectrum = [
+            item
+            for item in manifest["orgs"][0]["deliverables"]
+            if item["label"] == "AP spectrum"
+        ][0]
+        assert ap_spectrum["present"] is False
+        index = (tmp_path / "reports" / "latest" / "index.html").read_text(encoding="utf-8")
+        assert "Missing deliverables" in index
+        assert '<span class="status missing">Missing</span>' in index
+
+
 class TestReportingEntrypoint:
     def test_single_source_generation_writes_named_aliases(self, monkeypatch, tmp_path):
         from reporting import app
@@ -181,6 +335,67 @@ class TestReportingEntrypoint:
 
         monkeypatch.setattr(app, "write_pdf", fake_write_pdf)
 
-        assert app.main(["--source-dir", str(source), "--output-dir", str(output)]) == 0
-        assert any(output.glob("Demo_Org_Complete_Report_*.pdf"))
+        assert app.main([
+            "--source-dir", str(source),
+            "--output-dir", str(output),
+            "--fixed-now", "2026-05-02T21:30:00",
+        ]) == 0
+        assert (output / "Demo_Org_Complete_Report_2026-05-02.pdf").exists()
+        assert (output / "Demo_Org_Battery_Backup_Pricing_Calculation_Report_2026-05-02.pdf").exists()
+        assert (output / "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf").exists()
+        assert (output / "Demo_Org_UPS_Switch_Power_Plan_Report_2026-05-02.json").exists()
+        assert (output / "ups_switch_power_plan.json").exists()
+        assert (output / "Demo_Org_2026-05-02_2130_report.pdf").exists()
         assert (output / "report.pdf").exists()
+        assert (output / "report_battery_backup.pdf").exists()
+        assert (output / "report_ap_spectrum.pdf").exists()
+
+    def test_reports_dir_writes_run_and_latest_without_html_when_pdf_only(self, monkeypatch, tmp_path):
+        from reporting import app
+
+        source = tmp_path / "source"
+        reports = tmp_path / "reports"
+        source.mkdir()
+        (source / "recommendations.md").write_text("# Meraki Recommendations: Demo Org\n", encoding="utf-8")
+
+        monkeypatch.setattr(app, "build_org_report", lambda org_dir, org_name, report_kind="full": f"<p>{report_kind}</p>")
+
+        def fake_write_pdf(html_path, pdf_path):
+            Path(pdf_path).write_text("pdf", encoding="utf-8")
+            return True
+
+        monkeypatch.setattr(app, "write_pdf", fake_write_pdf)
+
+        assert app.main([
+            "--source-dir", str(source),
+            "--reports-dir", str(reports),
+            "--pdf-only",
+            "--fixed-now", "2026-05-02T21:30:00",
+        ]) == 0
+
+        run_dir = reports / "Demo_Org" / "2026-05-02_2130"
+        latest_dir = reports / "latest" / "Demo_Org"
+        assert (run_dir / "Demo_Org_Complete_Report_2026-05-02.pdf").exists()
+        assert (run_dir / "Demo_Org_Battery_Backup_Pricing_Calculation_Report_2026-05-02.pdf").exists()
+        assert (run_dir / "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf").exists()
+        assert (run_dir / "Demo_Org_UPS_Switch_Power_Plan_Report_2026-05-02.json").exists()
+        assert (run_dir / "ups_switch_power_plan.json").exists()
+        assert (latest_dir / "Demo_Org_Complete_Report_2026-05-02.pdf").exists()
+        assert (latest_dir / "Demo_Org_Battery_Backup_Pricing_Calculation_Report_2026-05-02.pdf").exists()
+        assert (latest_dir / "Demo_Org_AP_Spectrum_Report_2026-05-02.pdf").exists()
+        assert (latest_dir / "Demo_Org_UPS_Switch_Power_Plan_Report_2026-05-02.json").exists()
+        assert (latest_dir / "ups_switch_power_plan.json").exists()
+        assert (latest_dir / "report.pdf").exists()
+        assert (latest_dir / "report_battery_backup.pdf").exists()
+        assert (latest_dir / "report_ap_spectrum.pdf").exists()
+        assert not (run_dir / "report.pdf").exists()
+        assert not (run_dir / "Demo_Org_2026-05-02_2130_report.pdf").exists()
+        assert not list(run_dir.glob("*.html"))
+        assert not list(latest_dir.glob("*.html"))
+
+    def test_fixed_now_rejects_invalid_timestamp(self):
+        from reporting import app
+
+        with pytest.raises(SystemExit) as exc:
+            app.main(["--fixed-now", "not-a-date"])
+        assert exc.value.code == 2

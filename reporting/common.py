@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKUPS_DIR = os.path.join(BASE_DIR, "backups")
-REPORT_VERSION = "1.0"
+REPORT_VERSION = "2026_5_3"
 
 # Must match BACKUP_SCHEMA_VERSION in meraki_backup.py.
 # Increment here when report_generator.py adds new required fields/files.
@@ -150,14 +150,21 @@ def md_to_html(md_text: str) -> str:
     return "\n".join(html_lines)
 
 
-def render_section(title: str, rows: List[List[str]]) -> str:
+def render_section(title: str, rows: List[List[str]], headers: List[str] | None = None) -> str:
     if not rows:
         return ""
     header = f"<h2>{_he(title)}</h2>"
+    table_head = ""
+    if headers:
+        table_head = (
+            "<thead><tr>"
+            + "".join(f"<th>{_he(str(c))}</th>" for c in headers)
+            + "</tr></thead>"
+        )
     table_rows = "".join(
         "<tr>" + "".join(f"<td>{_he(str(c))}</td>" for c in r) + "</tr>" for r in rows
     )
-    return f'{header}<table class="data">{table_rows}</table>'
+    return f'{header}<table class="data">{table_head}<tbody>{table_rows}</tbody></table>'
 
 
 def render_kpi_row(items: List[Tuple[str, str]]) -> str:
@@ -469,22 +476,24 @@ def _port_heat_label(score: float) -> str:
 
 
 def _speed_label(speed: str) -> str:
-    if speed.startswith("10 "):
+    speed_text = str(speed or "").strip().lower()
+    if speed_text.startswith("10 mb"):
         return "10M"
-    if speed.startswith("100 "):
+    if speed_text.startswith("100 mb"):
         return "100M"
-    if speed.startswith("2.5 "):
+    if speed_text.startswith("2.5 g"):
         return "2.5G"
-    if speed.startswith("5 "):
+    if speed_text.startswith("5 g"):
         return "5G"
-    if speed.startswith("10 G"):
+    if speed_text.startswith("10 g"):
         return "10G"
-    if speed.startswith("25 G"):
+    if speed_text.startswith("25 g"):
         return "25G"
+    if speed_text.startswith("100 g"):
+        return "100G"
     return "1G"
 
 
 def _is_sfp_like_port(port_id: str) -> bool:
     text = str(port_id or "").upper()
     return "_" in text or text.startswith("SFP") or "NM" in text or text.startswith("X")
-

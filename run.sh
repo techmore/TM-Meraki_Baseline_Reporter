@@ -12,6 +12,10 @@ usage() {
   echo "      --report-only    Skip all data collection; build reports from existing backups/"
   echo "      --no-query       Skip API query + backup stages; use data already in backups/"
   echo "      --demo-report    Build a report from sanitized test fixtures"
+  echo "      --reports-dir <dir>"
+  echo "                       Write generated reports outside backups/ (default: reports)"
+  echo "      --keep-html      Keep generated HTML alongside PDFs in reports/"
+  echo "      --fixed-now <ts> Use a fixed ISO timestamp for deterministic reports"
   echo "      --no-ai-review   Skip the Ollama review stage"
   echo "      --health-check   Validate local environment and exit"
   echo "      --no-open        Do not open generated reports after a successful run"
@@ -22,7 +26,9 @@ usage() {
   echo "    ./run.sh --model gemma4:e2b"
   echo "    ./run.sh --no-query                # re-generate reports from last backup"
   echo "    ./run.sh --report-only --no-ai-review"
+  echo "    ./run.sh --report-only --reports-dir reports --no-ai-review"
   echo "    ./run.sh --demo-report --no-open"
+  echo "    ./run.sh --demo-report --fixed-now 2026-05-02T21:30:00 --no-open"
 }
 
 validate_environment() {
@@ -146,10 +152,19 @@ NO_QUERY=0
 NO_OPEN=0
 HEALTH_CHECK=0
 DEMO_REPORT=0
+FIXED_NOW=""
+REPORTS_DIR="reports"
+KEEP_HTML=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model|-m)
       CUSTOM_MODEL="${2:-}"
+      if [[ -z "$CUSTOM_MODEL" || "$CUSTOM_MODEL" == --* ]]; then
+        echo "Missing value for $1" >&2
+        echo "" >&2
+        usage >&2
+        exit 2
+      fi
       shift 2
       ;;
     --report-only)
@@ -171,6 +186,30 @@ while [[ $# -gt 0 ]]; do
     --demo-report)
       DEMO_REPORT=1
       shift
+      ;;
+    --reports-dir)
+      REPORTS_DIR="${2:-}"
+      if [[ -z "$REPORTS_DIR" || "$REPORTS_DIR" == --* ]]; then
+        echo "Missing value for $1" >&2
+        echo "" >&2
+        usage >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --keep-html)
+      KEEP_HTML=1
+      shift
+      ;;
+    --fixed-now)
+      FIXED_NOW="${2:-}"
+      if [[ -z "$FIXED_NOW" || "$FIXED_NOW" == --* ]]; then
+        echo "Missing value for $1" >&2
+        echo "" >&2
+        usage >&2
+        exit 2
+      fi
+      shift 2
       ;;
     --health-check)
       HEALTH_CHECK=1
@@ -203,6 +242,19 @@ if [[ -z "${PYTHON_BIN:-}" ]]; then
   fi
 fi
 
+if [[ -n "$FIXED_NOW" ]]; then
+  if ! "$PYTHON_BIN" - "$FIXED_NOW" <<'PY' >/dev/null 2>&1
+from datetime import datetime
+import sys
+datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+PY
+  then
+    echo "Invalid value for --fixed-now: must be an ISO timestamp, e.g. 2026-05-02T21:30:00" >&2
+    exit 2
+  fi
+  export MERAKI_REPORT_FIXED_NOW="$FIXED_NOW"
+fi
+
 if (( HEALTH_CHECK == 1 )); then
   HEALTH_ARGS=()
   if (( REPORT_ONLY == 1 || NO_QUERY == 1 )); then
@@ -214,10 +266,15 @@ fi
 
 if (( DEMO_REPORT == 1 )); then
   DEMO_OUTPUT="backups/.demo/Fixture_Demo_Org"
+  DEMO_ARGS=()
+  if [[ -n "$FIXED_NOW" ]]; then
+    DEMO_ARGS+=("--fixed-now" "$FIXED_NOW")
+  fi
   "$PYTHON_BIN" -m reporting \
     --source-dir tests/fixtures \
     --org-name "Fixture Demo Org" \
-    --output-dir "$DEMO_OUTPUT"
+    --output-dir "$DEMO_OUTPUT" \
+    "${DEMO_ARGS[@]+"${DEMO_ARGS[@]}"}"
   demo_status=$?
   if (( NO_OPEN == 0 )); then
     demo_report=$(find "$DEMO_OUTPUT" -maxdepth 1 -type f -name '*_Complete_Report_*.pdf' | sort | tail -n 1)
@@ -253,6 +310,7 @@ STAGES=(
   "Merge Recommendations|merge_recommendations.py"
   "AI Review (Ollama)|ollama_review.py"
   "Generate Reports|report_generator.py"
+  "Report Inventory|report_inventory.py"
 )
 TOTAL=${#STAGES[@]}
 TIMING_HISTORY_FILE="$(pwd)/backups/.stage_timings.json"
@@ -268,7 +326,11 @@ _hr() {
 print_header() {
   local now model_line mode_line
   now=$(date '+%A, %-d %B %Y  %H:%M')
-  model_line="AI model: ${OLLAMA_MODEL:-gemma4:e2b (default)}"
+  if (( NO_AI_REVIEW == 1 )); then
+    model_line="AI review: disabled"
+  else
+    model_line="AI model: ${OLLAMA_MODEL:-gemma4:e2b (default)}"
+  fi
   if   (( REPORT_ONLY == 1 )); then mode_line="Mode: report-only (skipping data collection)"
   elif (( NO_QUERY    == 1 )); then mode_line="Mode: no-query (using existing backup data)"
   else                              mode_line="Mode: full run (fetching fresh API data)"
@@ -427,6 +489,15 @@ run_stage() {
   if [[ "$script" == "meraki_backup.py" ]]; then
     extra_args+=("--force-refresh")   # always fetch fresh — use --no-query to skip entirely
   fi
+  if [[ "$script" == "report_generator.py" ]]; then
+    extra_args+=("--reports-dir" "$REPORTS_DIR")
+    if (( KEEP_HTML == 0 )); then
+      extra_args+=("--pdf-only")
+    fi
+  fi
+  if [[ "$script" == "report_inventory.py" ]]; then
+    extra_args+=("--reports-dir" "$REPORTS_DIR")
+  fi
 
   "$PYTHON_BIN" "$script" "${extra_args[@]+"${extra_args[@]}"}" > "$tmp" 2>&1
   local exit_code=$?
@@ -575,15 +646,20 @@ echo -e "${BLU}╰$(_hr 62 ─ | tr -d '\n')╯${R}"
 echo ""
 
 if (( FAIL_COUNT == 0 )); then
-  echo -e "  ${GRN}${BOLD}All stages passed.${R}  Reports written to backups/."
+  echo -e "  ${GRN}${BOLD}All stages passed.${R}  Reports written to ${REPORTS_DIR}/."
   echo ""
 
   # ── Auto-open generated reports ───────────────────────────────────────────
+  REPORT_OUTPUT_DIR="$(pwd)/$REPORTS_DIR/latest"
   BACKUPS_DIR="$(pwd)/backups"
   if (( NO_OPEN == 1 )); then
     echo -e "  ${DIM2}Auto-open skipped by --no-open.${R}"
-  elif [[ -d "$BACKUPS_DIR" ]]; then
+  elif [[ -d "$REPORT_OUTPUT_DIR" || -d "$BACKUPS_DIR" ]]; then
    REPORT_FILES=()
+   SEARCH_DIR="$REPORT_OUTPUT_DIR"
+   if [[ ! -d "$SEARCH_DIR" ]]; then
+     SEARCH_DIR="$BACKUPS_DIR"
+   fi
    while IFS= read -r org_dir; do
      named_report=$(find "$org_dir" -maxdepth 1 -type f -name '*_Complete_Report_*.pdf' | sort | tail -n 1)
      named_html=$(find "$org_dir" -maxdepth 1 -type f -name '*_Complete_Report_*.html' | sort | tail -n 1)
@@ -596,7 +672,7 @@ if (( FAIL_COUNT == 0 )); then
      elif [[ -f "$org_dir/report.html" ]]; then
        REPORT_FILES+=("$org_dir/report.html")
      fi
-   done < <(find "$BACKUPS_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
+   done < <(find "$SEARCH_DIR" -mindepth 1 -maxdepth 1 -type d | sort)
 
     if (( ${#REPORT_FILES[@]} > 0 )); then
       echo -e "  ${OLV}Opening ${#REPORT_FILES[@]} report(s)…${R}"
@@ -618,7 +694,7 @@ if (( FAIL_COUNT == 0 )); then
         _open_file "$f"
       done
     else
-      echo -e "  ${DIM2}No report files found in backups/ — run the pipeline first.${R}"
+      echo -e "  ${DIM2}No report files found in ${REPORTS_DIR}/latest or backups/ — run the pipeline first.${R}"
     fi
   fi
 else

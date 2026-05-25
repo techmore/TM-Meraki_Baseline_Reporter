@@ -1,0 +1,272 @@
+{
+  "meta": {
+    "name": "UPS runtime and cost planning reference",
+    "updated": "2026-05-05",
+    "currency": "USD",
+    "target_runtime_hours": 10,
+    "notes": [
+      "Runtime estimates interpolate vendor/reseller runtime chart points by modeled watt load.",
+      "Modeled switch load equals observed Meraki PoE average plus a conservative chassis/base load estimate by model family.",
+      "UPS runtime varies with battery age, temperature, power factor, connected non-switch loads, and battery calibration. Validate with a field wattmeter and UPS runtime test before procurement."
+    ],
+    "sources": [
+      {
+        "title": "APC BX1500M product page",
+        "url": "https://www.apc.com/us/en/product/BX1500M/apc-backups-pro-1500va-tower-120v-10-nema-515r-outlets-avr-lcd/"
+      },
+      {
+        "title": "APC Smart-UPS X SMX2200RMLV2U product page",
+        "url": "https://www.apc.com/ca/en/product/SMX2200RMLV2U/apc-smartups-x-line-interactive-2200va-rack-tower-convertible-2u-120v-6x-515r%2B2x-520r-nema-smartslot-extended-runtime/"
+      },
+      {
+        "title": "Runtime Chart for Smart-UPS X",
+        "url": "https://www.apcguard.com/runtime-chart-for-smart-ups-x.asp"
+      },
+      {
+        "title": "APCGuard BX1500M runtime chart reference",
+        "url": "https://www.apcguard.com/BR1500MS.asp"
+      },
+      {
+        "title": "OMNIA/NCPA price list reference for BX1500M",
+        "url": "https://www.omniapartners.com/suppliers-files/A-D/D_H_Distributing/Contract_Documents/01-168/2-Copy_of_NCPA_Price_List_Nov_23__1_.pdf"
+      }
+    ]
+  },
+  "switch_load_assumptions": {
+    "model_prefixes": {
+      "C9300": 120,
+      "MS390": 120,
+      "MS350": 105,
+      "MS250": 95,
+      "MS225-48": 85,
+      "MS225-24": 55,
+      "MS210-48": 85,
+      "MS210-24": 55,
+      "MS130-48": 85,
+      "MS130-24": 55,
+      "MS120-48": 75,
+      "MS120-24": 45,
+      "MS120-8": 20
+    },
+    "fallback_by_port_count": {
+      "8": 25,
+      "24": 55,
+      "48": 85,
+      "default": 75
+    }
+  },
+  "products": {
+    "BX1500M": {
+      "vendor": "APC",
+      "name": "APC Back-UPS Pro 1500VA",
+      "sku": "BX1500M",
+      "max_watts": 900,
+      "max_va": 1500,
+      "unit_cost": 219.99,
+      "cost_note": "Planning unit cost from public OMNIA/NCPA price-list reference; validate current seller pricing before procurement.",
+      "configuration_label": "1 tower UPS",
+      "runtime_points_minutes": [
+        {"watts": 50, "minutes": 134},
+        {"watts": 100, "minutes": 68},
+        {"watts": 200, "minutes": 31.5},
+        {"watts": 300, "minutes": 19.1},
+        {"watts": 400, "minutes": 12.9},
+        {"watts": 450, "minutes": 10.9},
+        {"watts": 500, "minutes": 9.2},
+        {"watts": 600, "minutes": 6.8},
+        {"watts": 700, "minutes": 5.1},
+        {"watts": 800, "minutes": 3.8},
+        {"watts": 900, "minutes": 2.8}
+      ]
+    },
+    "SMX2200RMLV2U": {
+      "vendor": "APC",
+      "name": "APC Smart-UPS X 2200VA Rack/Tower",
+      "sku": "SMX2200RMLV2U",
+      "max_watts": 1980,
+      "max_va": 2200,
+      "unit_cost": 2220.55,
+      "external_battery_sku": "SMX120RMBP2U",
+      "external_battery_name": "APC External Battery Pack for Smart-UPS Extended Run SMX-Series",
+      "external_battery_unit_cost": 1266.49,
+      "runtime_configurations": [
+        {
+          "external_battery_count": 0,
+          "label": "1 UPS",
+          "runtime_points_minutes": [
+            {"watts": 50, "minutes": 444},
+            {"watts": 100, "minutes": 266},
+            {"watts": 200, "minutes": 143},
+            {"watts": 300, "minutes": 96},
+            {"watts": 400, "minutes": 71},
+            {"watts": 500, "minutes": 56},
+            {"watts": 600, "minutes": 46},
+            {"watts": 700, "minutes": 38},
+            {"watts": 800, "minutes": 33},
+            {"watts": 900, "minutes": 28},
+            {"watts": 1000, "minutes": 25},
+            {"watts": 1200, "minutes": 20},
+            {"watts": 1400, "minutes": 16},
+            {"watts": 1600, "minutes": 13},
+            {"watts": 1800, "minutes": 11},
+            {"watts": 1980, "minutes": 10}
+          ]
+        },
+        {
+          "external_battery_count": 1,
+          "label": "1 UPS + 1 external battery module",
+          "runtime_points_minutes": [
+            {"watts": 50, "minutes": 1483},
+            {"watts": 100, "minutes": 894},
+            {"watts": 200, "minutes": 486},
+            {"watts": 300, "minutes": 329},
+            {"watts": 400, "minutes": 246},
+            {"watts": 500, "minutes": 195},
+            {"watts": 600, "minutes": 161},
+            {"watts": 700, "minutes": 137},
+            {"watts": 800, "minutes": 118},
+            {"watts": 900, "minutes": 104},
+            {"watts": 1000, "minutes": 93},
+            {"watts": 1200, "minutes": 76},
+            {"watts": 1400, "minutes": 63},
+            {"watts": 1600, "minutes": 55},
+            {"watts": 1800, "minutes": 48},
+            {"watts": 1980, "minutes": 43}
+          ]
+        },
+        {
+          "external_battery_count": 2,
+          "label": "1 UPS + 2 external battery modules",
+          "runtime_points_minutes": [
+            {"watts": 50, "minutes": 2592},
+            {"watts": 100, "minutes": 1564},
+            {"watts": 200, "minutes": 852},
+            {"watts": 300, "minutes": 578},
+            {"watts": 400, "minutes": 433},
+            {"watts": 500, "minutes": 345},
+            {"watts": 600, "minutes": 285},
+            {"watts": 700, "minutes": 242},
+            {"watts": 800, "minutes": 210},
+            {"watts": 900, "minutes": 185},
+            {"watts": 1000, "minutes": 165},
+            {"watts": 1200, "minutes": 136},
+            {"watts": 1400, "minutes": 114},
+            {"watts": 1600, "minutes": 98},
+            {"watts": 1800, "minutes": 86},
+            {"watts": 1980, "minutes": 77}
+          ]
+        },
+        {
+          "external_battery_count": 3,
+          "label": "1 UPS + 3 external battery modules",
+          "runtime_points_minutes": [
+            {"watts": 50, "minutes": 3743},
+            {"watts": 100, "minutes": 2259},
+            {"watts": 200, "minutes": 1232},
+            {"watts": 300, "minutes": 836},
+            {"watts": 400, "minutes": 627},
+            {"watts": 500, "minutes": 500},
+            {"watts": 600, "minutes": 414},
+            {"watts": 700, "minutes": 352},
+            {"watts": 800, "minutes": 306},
+            {"watts": 900, "minutes": 270},
+            {"watts": 1000, "minutes": 241},
+            {"watts": 1200, "minutes": 198},
+            {"watts": 1400, "minutes": 167},
+            {"watts": 1600, "minutes": 144},
+            {"watts": 1800, "minutes": 127},
+            {"watts": 1980, "minutes": 114}
+          ]
+        },
+        {
+          "external_battery_count": 4,
+          "label": "1 UPS + 4 external battery modules",
+          "runtime_points_minutes": [
+            {"watts": 50, "minutes": 4924},
+            {"watts": 100, "minutes": 2972},
+            {"watts": 200, "minutes": 1622},
+            {"watts": 300, "minutes": 1100},
+            {"watts": 400, "minutes": 827},
+            {"watts": 500, "minutes": 659},
+            {"watts": 600, "minutes": 546},
+            {"watts": 700, "minutes": 464},
+            {"watts": 800, "minutes": 404},
+            {"watts": 900, "minutes": 356},
+            {"watts": 1000, "minutes": 318},
+            {"watts": 1200, "minutes": 262},
+            {"watts": 1400, "minutes": 221},
+            {"watts": 1600, "minutes": 191},
+            {"watts": 1800, "minutes": 168},
+            {"watts": 1980, "minutes": 151}
+          ]
+        },
+        {
+          "external_battery_count": 6,
+          "label": "1 UPS + 6 external battery modules",
+          "runtime_points_minutes": [
+            {"watts": 50, "minutes": 7355},
+            {"watts": 100, "minutes": 4440},
+            {"watts": 200, "minutes": 2424},
+            {"watts": 300, "minutes": 1646},
+            {"watts": 400, "minutes": 1237},
+            {"watts": 500, "minutes": 986},
+            {"watts": 600, "minutes": 817},
+            {"watts": 700, "minutes": 696},
+            {"watts": 800, "minutes": 605},
+            {"watts": 900, "minutes": 534},
+            {"watts": 1000, "minutes": 478},
+            {"watts": 1200, "minutes": 393},
+            {"watts": 1400, "minutes": 333},
+            {"watts": 1600, "minutes": 288},
+            {"watts": 1800, "minutes": 254},
+            {"watts": 1980, "minutes": 228}
+          ]
+        },
+        {
+          "external_battery_count": 8,
+          "label": "1 UPS + 8 external battery modules",
+          "runtime_points_minutes": [
+            {"watts": 50, "minutes": 9854},
+            {"watts": 100, "minutes": 5950},
+            {"watts": 200, "minutes": 3249},
+            {"watts": 300, "minutes": 2206},
+            {"watts": 400, "minutes": 1658},
+            {"watts": 500, "minutes": 1322},
+            {"watts": 600, "minutes": 1096},
+            {"watts": 700, "minutes": 934},
+            {"watts": 800, "minutes": 812},
+            {"watts": 900, "minutes": 717},
+            {"watts": 1000, "minutes": 642},
+            {"watts": 1200, "minutes": 528},
+            {"watts": 1400, "minutes": 448},
+            {"watts": 1600, "minutes": 388},
+            {"watts": 1800, "minutes": 341},
+            {"watts": 1980, "minutes": 308}
+          ]
+        },
+        {
+          "external_battery_count": 10,
+          "label": "1 UPS + 10 external battery modules",
+          "runtime_points_minutes": [
+            {"watts": 50, "minutes": 12408},
+            {"watts": 100, "minutes": 7492},
+            {"watts": 200, "minutes": 4092},
+            {"watts": 300, "minutes": 2779},
+            {"watts": 400, "minutes": 2089},
+            {"watts": 500, "minutes": 1666},
+            {"watts": 600, "minutes": 1381},
+            {"watts": 700, "minutes": 1177},
+            {"watts": 800, "minutes": 1024},
+            {"watts": 900, "minutes": 904},
+            {"watts": 1000, "minutes": 809},
+            {"watts": 1200, "minutes": 666},
+            {"watts": 1400, "minutes": 565},
+            {"watts": 1600, "minutes": 490},
+            {"watts": 1800, "minutes": 431},
+            {"watts": 1980, "minutes": 389}
+          ]
+        }
+      ]
+    }
+  }
+}

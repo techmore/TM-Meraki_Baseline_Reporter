@@ -50,6 +50,17 @@ class TestCacheIsFresh:
         os.utime(str(p), (recent_time, recent_time))
         assert mb._cache_is_fresh(str(p), max_age_h=12) is True
 
+    def test_fresh_error_payload_is_not_success_cache(self, tmp_path):
+        p = tmp_path / "rf_assignments.json"
+        p.write_text(json.dumps({"error": "temporary API failure"}))
+        assert mb._cache_is_fresh(str(p), max_age_h=12) is True
+        assert mb._cache_is_fresh_success(str(p), max_age_h=12) is False
+
+    def test_fresh_success_payload_is_success_cache(self, tmp_path):
+        p = tmp_path / "rf_assignments.json"
+        p.write_text(json.dumps([{"serial": "Q2XX-TEST-0001"}]))
+        assert mb._cache_is_fresh_success(str(p), max_age_h=12) is True
+
 
 # ── write_json / _load_json_file ──────────────────────────────────────────────
 
@@ -95,6 +106,21 @@ class TestSchemaVersion:
 
     def test_pipeline_version_is_string(self):
         assert isinstance(mb.PIPELINE_VERSION, str)
+
+
+class TestClientSummaries:
+    def test_ap_client_summary_ignores_wired_clients(self):
+        summary = mb.summarize_ap_clients(
+            {
+                "N_1": [
+                    {"recentDeviceConnection": "Wireless", "recentDeviceSerial": "AP1"},
+                    {"recentDeviceConnection": "Wireless", "recentDeviceSerial": "AP1"},
+                    {"recentDeviceConnection": "Wired", "recentDeviceSerial": "SW1"},
+                ]
+            }
+        )
+
+        assert summary["ap_client_counts"] == [("AP1", 2)]
 
 
 class TestPagedGetRateLimit:
@@ -145,6 +171,35 @@ class TestSharedMerakiClient:
         assert url.startswith("https://api.meraki.com/api/v1/organizations?")
         assert "perPage=5" in url
         assert "foo=bar" in url
+
+    def test_build_url_repeats_array_params_without_bracket_suffix(self):
+        url = mc.build_url(
+            "/organizations/1/wireless/rfProfiles/assignments/byDevice",
+            {"productTypes": ["wireless"], "networkIds": ["N_1", "N_2"]},
+        )
+        assert "productTypes=wireless" in url
+        assert "networkIds=N_1" in url
+        assert "networkIds=N_2" in url
+        assert "productTypes%5B%5D" not in url
+        assert "networkIds%5B%5D" not in url
+
+    def test_build_url_supports_meraki_bracket_array_params(self):
+        url = mc.build_url(
+            "/organizations/1/wireless/devices/channelUtilization/byDevice",
+            {"networkIds[]": ["N_1", "N_2"], "timespan": 86400},
+        )
+        assert "networkIds%5B%5D=N_1" in url
+        assert "networkIds%5B%5D=N_2" in url
+        assert "timespan=86400" in url
+
+    def test_build_url_supports_meraki_multiple_bracket_arrays(self):
+        url = mc.build_url(
+            "/organizations/1/wireless/rfProfiles/assignments/byDevice",
+            {"productTypes[]": ["wireless"], "networkIds[]": ["N_1", "N_2"]},
+        )
+        assert "productTypes%5B%5D=wireless" in url
+        assert "networkIds%5B%5D=N_1" in url
+        assert "networkIds%5B%5D=N_2" in url
 
     def test_shared_paged_get_honors_retry_after(self, monkeypatch):
         sleeps = []
@@ -217,3 +272,33 @@ class TestSummarizeInventory:
         result = mb.summarize_inventory(inventory)
         models = [m[0] for m in result.get("top_models", [])]
         assert "MS225" in models
+
+
+class TestRecommendSwitchPorts:
+    def test_disconnected_access_port_messages_are_not_findings(self):
+        result = mb.recommend_switch_ports(
+            {
+                "SW1": [
+                    {
+                        "portId": "1",
+                        "status": "Disconnected",
+                        "isUplink": False,
+                        "errors": ["Port disconnected", "No link detected"],
+                        "warnings": ["Link down"],
+                    },
+                    {
+                        "portId": "2",
+                        "status": "Connected",
+                        "isUplink": False,
+                        "errors": ["CRC errors detected"],
+                        "warnings": [],
+                    },
+                ]
+            },
+            {"SW1": [{"portId": "1", "enabled": True}, {"portId": "2", "enabled": True}]},
+        )
+
+        findings = result["switch_port_findings"]
+        assert len(findings) == 1
+        assert findings[0]["portId"] == "2"
+        assert findings[0]["detail"] == "CRC errors detected"

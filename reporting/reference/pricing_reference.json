@@ -1,0 +1,340 @@
+{
+  "meta": {
+    "name": "Report pricing and replacement reference",
+    "updated": "2026-05-03",
+    "currency": "USD",
+    "notes": [
+      "Equivalent mappings are planning references only.",
+      "UniFi unit pricing is public Ubiquiti US Store pricing observed on the updated date unless a source is noted otherwise.",
+      "Cisco/Meraki unit pricing is included only when explicitly labeled as a planning reference. NetworkTigers entries are used-market hardware references, not Cisco Meraki list price, new hardware quote, licensing, tax, freight, or support pricing.",
+      "Provide org-local pricing.json to override any model mapping, unit cost, support cost, or equivalent selection."
+    ]
+  },
+  "products": {
+    "NT-C9300-48UXM-E-USED": {
+      "vendor": "Cisco",
+      "category": "meraki_used",
+      "name": "Cisco C9300-48UXM-E Catalyst 9300 48-port mGig UPoE switch",
+      "sku": "C9300-48UXM-E",
+      "unit_cost": 1516.99,
+      "condition": "used",
+      "source_label": "NetworkTigers (used)",
+      "description": "Used-market reference for Catalyst 9300 48-port 2.5 GbE / mGig UPoE RJ45 switch. Planning reference only; verify licensing, DNA/Meraki persona support, warranty, optics, and support eligibility before quoting."
+    },
+    "NT-C9200L-48P-4X-E-USED": {
+      "vendor": "Cisco",
+      "category": "meraki_used",
+      "name": "Cisco C9200L-48P-4X-E Catalyst 9200L 48-port PoE+ switch",
+      "sku": "C9200L-48P-4X-E",
+      "unit_cost": 2645.99,
+      "condition": "used",
+      "source_label": "NetworkTigers (used)",
+      "description": "Used-market reference for Catalyst 9200L 48-port 1 GbE PoE+ RJ45 switch with 4 10 GbE SFP+ uplinks. Planning reference only; verify licensing, warranty, optics, and support eligibility before quoting."
+    },
+    "NT-MR46-HW-USED": {
+      "vendor": "Cisco Meraki",
+      "category": "meraki_used",
+      "name": "Cisco Meraki MR46-HW Wi-Fi 6 access point with wall mount",
+      "sku": "MR46-HW",
+      "unit_cost": 239.99,
+      "condition": "used",
+      "source_label": "NetworkTigers (used)",
+      "description": "Used-market reference for Meraki MR46-HW quad-radio 4x4:4 802.11ax access point with wall mount. Planning reference only; does not include Meraki licensing, warranty, support, tax, or freight."
+    },
+    "U7-Pro": {
+      "vendor": "Ubiquiti",
+      "category": "access_point",
+      "name": "U7 Pro",
+      "sku": "U7-Pro",
+      "unit_cost": 189,
+      "ui_care_5yr_unit_cost": 30,
+      "description": "Ceiling-mounted WiFi 7 AP with 6 spatial streams and 6 GHz support.",
+      "source_url": "https://store.ui.com/us/en/category/wifi-flagship/products/u7-pro"
+    },
+    "U7-LR": {
+      "vendor": "Ubiquiti",
+      "category": "access_point",
+      "name": "U7 Long-Range",
+      "sku": "U7-LR",
+      "unit_cost": 159,
+      "ui_care_5yr_unit_cost": 39,
+      "description": "Compact ceiling-mount WiFi 7 AP with 5 spatial streams and extended signal range.",
+      "source_url": "https://store.ui.com/us/en/products/u7-lr"
+    },
+    "USW-Pro-24-POE": {
+      "vendor": "Ubiquiti",
+      "category": "switch",
+      "name": "Pro 24 PoE",
+      "sku": "USW-Pro-24-POE",
+      "unit_cost": 699,
+      "ui_care_5yr_unit_cost": 125,
+      "poe_budget_watts": 400,
+      "description": "24-port Layer 3 switch capable of high-power PoE++ output.",
+      "source_url": "https://store.ui.com/us/en/category/all-switching/products/usw-pro-24-poe"
+    },
+    "USW-Pro-48-POE": {
+      "vendor": "Ubiquiti",
+      "category": "switch",
+      "name": "Pro 48 PoE",
+      "sku": "USW-Pro-48-POE",
+      "unit_cost": 1099,
+      "ui_care_5yr_unit_cost": 199,
+      "poe_budget_watts": 600,
+      "description": "48-port Layer 3 switch capable of high-power PoE++ output.",
+      "source_url": "https://store.ui.com/us/en/category/all-switching/products/usw-pro-48-poe"
+    },
+    "USW-Pro-XG-24-PoE": {
+      "vendor": "Ubiquiti",
+      "category": "switch",
+      "name": "Pro XG 24 PoE",
+      "sku": "USW-Pro-XG-24-PoE",
+      "unit_cost": 1799,
+      "ui_care_5yr_unit_cost": 359,
+      "poe_budget_watts": 720,
+      "description": "24-port Layer 3 Etherlighting PoE+++ switch with 16 10 GbE, 8 2.5 GbE, and 2 25G SFP28 ports.",
+      "source_url": "https://store.ui.com/us/en/category/all-switching/products/usw-pro-xg-24-poe"
+    },
+    "USW-Pro-XG-48-PoE": {
+      "vendor": "Ubiquiti",
+      "category": "switch",
+      "name": "Pro XG 48 PoE",
+      "sku": "USW-Pro-XG-48-PoE",
+      "unit_cost": 2499,
+      "ui_care_5yr_unit_cost": 499,
+      "poe_budget_watts": 1080,
+      "description": "48-port Layer 3 Etherlighting PoE+++ switch with 32 10 GbE, 16 2.5 GbE PoE, and 4 25G SFP28 ports.",
+      "source_url": "https://store.ui.com/us/en/category/all-switching/products/usw-pro-xg-48-poe"
+    },
+    "USW-Aggregation": {
+      "vendor": "Ubiquiti",
+      "category": "aggregation",
+      "name": "Aggregation",
+      "sku": "USW-Aggregation",
+      "unit_cost": 269,
+      "ui_care_5yr_unit_cost": 59,
+      "description": "8-port Layer 2 switch made for 10G SFP+ connections.",
+      "source_url": "https://store.ui.com/us/en/products/usw-aggregation"
+    },
+    "USW-Pro-Aggregation": {
+      "vendor": "Ubiquiti",
+      "category": "aggregation",
+      "name": "Hi-Capacity Aggregation",
+      "sku": "USW-Pro-Aggregation",
+      "unit_cost": 899,
+      "ui_care_5yr_unit_cost": 179,
+      "description": "32-port Layer 3 switch made for high-capacity 10G SFP+ and 25G SFP28 connections.",
+      "source_url": "https://store.ui.com/us/en/category/all-switching/products/usw-pro-aggregation"
+    },
+    "USW-Pro-XG-Aggregation": {
+      "vendor": "Ubiquiti",
+      "category": "aggregation",
+      "name": "Pro XG Aggregation",
+      "sku": "USW-Pro-XG-Aggregation",
+      "unit_cost": 2499,
+      "ui_care_5yr_unit_cost": 499,
+      "description": "32-port Layer 3 Etherlighting switch for high-capacity 25G SFP28 connections.",
+      "source_url": "https://store.ui.com/us/en/products/usw-pro-xg-aggregation"
+    },
+    "UDM-Pro-Max": {
+      "vendor": "Ubiquiti",
+      "category": "gateway",
+      "name": "Dream Machine Pro Max",
+      "sku": "UDM-Pro-Max",
+      "unit_cost": 599,
+      "ui_care_5yr_unit_cost": 119,
+      "cybersecure_annual_unit_cost": 99,
+      "description": "10G Cloud Gateway with 200+ UniFi device / 2,000+ client support, 5 Gbps IPS routing, and redundant NVR storage.",
+      "source_url": "https://store.ui.com/us/en/category/all-cloud-gateways/products/udm-pro-max"
+    },
+    "UDM-Beast": {
+      "vendor": "Ubiquiti",
+      "category": "gateway",
+      "name": "Dream Machine Beast",
+      "sku": "UDM-Beast",
+      "unit_cost": 1499,
+      "ui_care_5yr_unit_cost": 299,
+      "cybersecure_annual_unit_cost": 99,
+      "description": "Hyperscale-class Cloud Gateway delivering 25 Gbps IPS/IDS, 7,500+ client capacity, and the full UniFi application platform in one system. USD planning price came from user-provided Ubiquiti Store detail; verify before quoting.",
+      "source_url": "https://eu.store.ui.com/eu/en/category/cloud-gateways-large-scale/products/udm-beast"
+    }
+  },
+  "unifi_equivalents": {
+    "MX68": {
+      "product_key": "UDM-Pro-Max",
+      "rationale": "Small MX class; UDM Pro Max provides materially more client and IPS headroom than older branch MX appliances."
+    },
+    "MX75": {
+      "product_key": "UDM-Pro-Max",
+      "rationale": "Branch MX replacement class with 5 Gbps IPS routing headroom."
+    },
+    "MX85": {
+      "product_key": "UDM-Pro-Max",
+      "rationale": "Branch MX replacement class with 5 Gbps IPS routing headroom."
+    },
+    "MX95": {
+      "product_key": "UDM-Pro-Max",
+      "rationale": "Branch/campus edge candidate when advanced Meraki SD-WAN features are not mandatory."
+    },
+    "MX100": {
+      "product_key": "UDM-Pro-Max",
+      "rationale": "Older MX100 campus edge candidate; validate WAN throughput, VPN, and security feature parity before selecting."
+    },
+    "MX105": {
+      "product_key": "UDM-Beast",
+      "rationale": "Higher-throughput campus edge candidate; validate HA, VPN, and security controls."
+    },
+    "MX250": {
+      "product_key": "UDM-Beast",
+      "rationale": "Large MX class; use only as a planning placeholder until gateway throughput and feature requirements are validated."
+    },
+    "MX450": {
+      "product_key": "UDM-Beast",
+      "rationale": "Large MX class; use only as a planning placeholder until gateway throughput and feature requirements are validated."
+    },
+    "MS120-24": {
+      "product_key": "USW-Pro-24-POE",
+      "rationale": "24-port access switch replacement class with higher PoE budget than many legacy MS120 variants."
+    },
+    "MS120-48": {
+      "product_key": "USW-Pro-48-POE",
+      "rationale": "48-port access switch replacement class with 600 W PoE budget."
+    },
+    "MS125-24": {
+      "product_key": "USW-Pro-24-POE",
+      "rationale": "24-port access switch replacement class."
+    },
+    "MS125-48": {
+      "product_key": "USW-Pro-48-POE",
+      "rationale": "48-port access switch replacement class."
+    },
+    "MS130-24": {
+      "product_key": "USW-Pro-XG-24-PoE",
+      "rationale": "2.5/10 GbE access switch candidate for modern AP uplinks and higher PoE headroom."
+    },
+    "MS130-48": {
+      "product_key": "USW-Pro-XG-48-PoE",
+      "rationale": "2.5/10 GbE access switch candidate for modern AP uplinks and higher PoE headroom."
+    },
+    "MS210-24": {
+      "product_key": "USW-Pro-24-POE",
+      "rationale": "24-port Layer 3 access switch replacement class."
+    },
+    "MS210-48": {
+      "product_key": "USW-Pro-48-POE",
+      "rationale": "48-port Layer 3 access switch replacement class."
+    },
+    "MS220-24": {
+      "product_key": "USW-Pro-24-POE",
+      "rationale": "24-port access switch replacement class."
+    },
+    "MS220-48": {
+      "product_key": "USW-Pro-48-POE",
+      "rationale": "48-port access switch replacement class."
+    },
+    "MS225-24": {
+      "product_key": "USW-Pro-24-POE",
+      "rationale": "24-port access switch replacement class."
+    },
+    "MS225-48": {
+      "product_key": "USW-Pro-48-POE",
+      "rationale": "48-port access switch replacement class."
+    },
+    "MS250-24": {
+      "product_key": "USW-Pro-24-POE",
+      "rationale": "24-port Layer 3 access switch replacement class."
+    },
+    "MS250-48": {
+      "product_key": "USW-Pro-48-POE",
+      "rationale": "48-port Layer 3 access switch replacement class."
+    },
+    "MS350-24": {
+      "product_key": "USW-Pro-XG-24-PoE",
+      "rationale": "Higher-end 24-port switch candidate; validate access/core role before selecting."
+    },
+    "MS350-48": {
+      "product_key": "USW-Pro-XG-48-PoE",
+      "rationale": "Higher-end 48-port switch candidate; validate access/core role before selecting."
+    },
+    "MS390-24": {
+      "product_key": "USW-Pro-XG-24-PoE",
+      "rationale": "Higher-end 24-port switch candidate; validate access/core role before selecting."
+    },
+    "MS390-48": {
+      "product_key": "USW-Pro-XG-48-PoE",
+      "rationale": "Higher-end 48-port switch candidate; validate access/core role before selecting."
+    },
+    "C9300-24": {
+      "product_key": "USW-Pro-XG-24-PoE",
+      "rationale": "Catalyst access switch candidate where multigig and high PoE headroom are desired."
+    },
+    "C9300-48": {
+      "product_key": "USW-Pro-XG-48-PoE",
+      "rationale": "Catalyst access switch candidate where multigig and high PoE headroom are desired."
+    },
+    "MR24": {
+      "product_key": "U7-LR",
+      "rationale": "Legacy indoor AP refresh candidate; validate density and 6 GHz design during survey."
+    },
+    "MR33": {
+      "product_key": "U7-LR",
+      "rationale": "Legacy indoor AP refresh candidate; validate density and 6 GHz design during survey."
+    },
+    "MR34": {
+      "product_key": "U7-LR",
+      "rationale": "Legacy indoor AP refresh candidate; validate density and 6 GHz design during survey."
+    },
+    "MR36": {
+      "product_key": "U7-LR",
+      "rationale": "Indoor AP refresh candidate; validate density and 6 GHz design during survey."
+    },
+    "MR42": {
+      "product_key": "U7-LR",
+      "rationale": "Legacy indoor AP refresh candidate; validate density and 6 GHz design during survey."
+    },
+    "MR44": {
+      "product_key": "U7-Pro",
+      "rationale": "Modern indoor AP replacement class with Wi-Fi 7 and 6 GHz support."
+    },
+    "MR46": {
+      "product_key": "U7-Pro",
+      "rationale": "Modern indoor AP replacement class with Wi-Fi 7 and 6 GHz support."
+    },
+    "MR52": {
+      "product_key": "U7-Pro",
+      "rationale": "High-performance indoor AP replacement class with Wi-Fi 7 and 6 GHz support."
+    },
+    "MR53": {
+      "product_key": "U7-Pro",
+      "rationale": "High-performance indoor AP replacement class with Wi-Fi 7 and 6 GHz support."
+    },
+    "MR56": {
+      "product_key": "U7-Pro",
+      "rationale": "High-performance indoor AP replacement class with Wi-Fi 7 and 6 GHz support."
+    },
+    "CW9176I": {
+      "product_key": "U7-Pro",
+      "rationale": "Modern indoor AP comparison point; verify whether dual-persona Cisco Wi-Fi 7 hardware should remain Meraki-managed."
+    },
+    "CW9178I": {
+      "product_key": "U7-Pro",
+      "rationale": "Modern indoor AP comparison point; verify whether dual-persona Cisco Wi-Fi 7 hardware should remain Meraki-managed."
+    }
+  },
+  "models": {
+    "C9300-48UXM-E": {
+      "meraki_unit_cost": 1516.99,
+      "meraki_unit_source": "NetworkTigers (used)",
+      "pricing_note": "Used-market hardware reference only; excludes licensing, warranty, support, tax, freight, optics, and implementation."
+    },
+    "C9200L-48P-4X-E": {
+      "meraki_unit_cost": 2645.99,
+      "meraki_unit_source": "NetworkTigers (used)",
+      "pricing_note": "Used-market hardware reference only; excludes licensing, warranty, support, tax, freight, optics, and implementation."
+    },
+    "MR46": {
+      "meraki_unit_cost": 239.99,
+      "meraki_unit_source": "NetworkTigers (used)",
+      "pricing_note": "Used-market MR46-HW reference only; excludes Meraki licensing, warranty, support, tax, freight, and implementation."
+    }
+  }
+}
