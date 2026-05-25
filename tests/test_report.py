@@ -937,7 +937,11 @@ class TestBuildOrgReport:
         assert "Wireless Event Log Context" in html
         assert "association_fail" in html
         assert "WAY TOO CLOSE / saturated RF bubble" in html
-        assert "Same-Band Context / Overlap Candidates" in html
+        assert "AP Action Matrix" in html
+        assert "Same-Band / Overdeployment Test Note" in html
+        assert "Same-Band RF-Domain Candidates (Distance Unconfirmed)" in html
+        assert "RF-Domain Candidate" in html
+        assert "physical AP-to-AP distance" in html
         assert "Current RF profile: Classroom Low Power (exact AP assignment)" in html
         assert "recover value by restoring Auto RF headroom" in html
         assert "Do not lower it further just because overlap is visible" in html
@@ -1119,6 +1123,69 @@ class TestBuildOrgReport:
         assert "Worst symptom is non-Wi-Fi interference, not AP-to-AP overlap" in html
         assert "Do not remove or replace APs solely because this band is saturated by non-Wi-Fi energy" in html
         assert "Current RF profile: Auditorium (exact AP assignment); 8 dBm min; 14 dBm max; low power ceiling" in html
+
+    def test_ap_spectrum_matches_rf_profile_assignment_by_unique_name_when_id_differs(self, tmp_path):
+        from reporting.app import build_org_report
+
+        for fn in os.listdir(FIXTURES):
+            src = os.path.join(FIXTURES, fn)
+            dst = tmp_path / fn
+            if os.path.isfile(src):
+                shutil.copy(src, dst)
+
+        (tmp_path / "channel_utilization_by_device.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "serial": "Q2AP-TEST-0001",
+                        "network": {"id": "N_test_001"},
+                        "byBand": [
+                            {
+                                "band": "5",
+                                "wifi": {"percentage": 42},
+                                "nonWifi": {"percentage": 1},
+                                "total": {"percentage": 46},
+                            }
+                        ],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "wireless_rf_profiles.json").write_text(
+            json.dumps(
+                {
+                    "N_test_001": [
+                        {
+                            "id": "indoor",
+                            "name": "Basic Indoor Profile",
+                            "fiveGhzSettings": {
+                                "minPower": 8,
+                                "maxPower": 30,
+                                "minBitrate": 12,
+                                "channelWidth": "auto",
+                            },
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "wireless_rf_profile_assignments.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "serial": "Q2AP-TEST-0001",
+                        "rfProfile": {"id": "stale-dashboard-id", "name": "Basic Indoor Profile"},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        html = build_org_report(str(tmp_path), "AP Spectrum Profile Match Test", report_kind="ap_spectrum")
+        assert "Current RF profile: Basic Indoor Profile (exact AP assignment); 8 dBm min; 30 dBm max; high power ceiling" in html
+        assert "settings detail not in backup" not in html
 
     def test_dated_complete_report_filename(self):
         from reporting.app import _dated_report_name

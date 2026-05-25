@@ -957,6 +957,12 @@ def _build_ap_spectrum_report(
         "interference",
         "noise",
         "poor",
+        "packet flood",
+        "flood",
+        "attack",
+        "wips",
+        "rogue",
+        "spoof",
     )
     wireless_events = _flatten_wireless_events(wireless_event_log)
     events_by_serial: Dict[str, List[Dict[str, Any]]] = {}
@@ -1001,16 +1007,37 @@ def _build_ap_spectrum_report(
             if isinstance(profile, dict) and profile.get("id")
         }
 
+    def _profile_settings_by_unique_name(net_id: str, name: str) -> Dict[str, Any] | None:
+        if not name:
+            return None
+        profiles = rf_profiles.get(net_id) if isinstance(rf_profiles, dict) else None
+        if not isinstance(profiles, list):
+            return None
+        matches = [
+            profile for profile in profiles
+            if isinstance(profile, dict) and str(profile.get("name") or "") == name
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     def _assigned_profile(ap: Dict[str, Any]) -> Tuple[Dict[str, Any] | None, bool, str]:
         assignment = assignment_by_serial.get(ap["serial"])
         assigned_profile = assignment.get("rfProfile") if isinstance(assignment, dict) else None
         assigned_profile_id = str(assigned_profile.get("id")) if isinstance(assigned_profile, dict) and assigned_profile.get("id") else ""
+        assigned_profile_name = str(assigned_profile.get("name")) if isinstance(assigned_profile, dict) and assigned_profile.get("name") else ""
         if assigned_profile_id:
             profile = _profile_settings_by_id(ap["network_id"]).get(assigned_profile_id)
             if profile:
                 return profile, True, str(profile.get("name") or assigned_profile.get("name") or assigned_profile_id)
+            profile = _profile_settings_by_unique_name(ap["network_id"], assigned_profile_name)
+            if profile:
+                return profile, True, str(profile.get("name") or assigned_profile_name or assigned_profile_id)
             if isinstance(assigned_profile, dict):
                 return assigned_profile, True, str(assigned_profile.get("name") or assigned_profile_id)
+
+        if assigned_profile_name:
+            profile = _profile_settings_by_unique_name(ap["network_id"], assigned_profile_name)
+            if profile:
+                return profile, True, str(profile.get("name") or assigned_profile_name)
 
         profiles = rf_profiles.get(ap["network_id"]) if isinstance(rf_profiles, dict) else None
         if isinstance(profiles, list):
@@ -1438,6 +1465,71 @@ def _build_ap_spectrum_report(
             names.append(f"{len(items) - limit} more")
         return ", ".join(names) if names else "none"
 
+    def _same_band_candidates(ap: Dict[str, Any], limit: int = 6) -> List[Tuple[Dict[str, Any], Dict[str, float], str, str]]:
+        band = ap["worst_band"]
+        if not band:
+            return []
+        candidates: List[Tuple[float, float, Dict[str, Any], Dict[str, float], str, str]] = []
+        for other in ap_records:
+            if other["serial"] == ap["serial"] or other["network_id"] != ap["network_id"]:
+                continue
+            stats = other["bands"].get(band)
+            if not stats:
+                continue
+            bubble_label, bubble_cls = _bubble(stats)
+            candidates.append((stats.get("wifi", 0.0), stats.get("total", 0.0), other, stats, bubble_label, bubble_cls))
+        candidates.sort(key=lambda item: (-item[0], -item[1], item[2]["name"]))
+        return [(other, stats, bubble_label, bubble_cls) for _, __, other, stats, bubble_label, bubble_cls in candidates[:limit]]
+
+    def _candidate_summary(ap: Dict[str, Any], limit: int = 3) -> str:
+        candidates = _same_band_candidates(ap, limit=limit)
+        if not candidates:
+            return "No same-band RF-domain candidates in this backup."
+        return "; ".join(
+            f"{other['name']} ({stats['wifi']:.1f}% Wi-Fi, {bubble})"
+            for other, stats, bubble, _ in candidates
+        )
+
+    def _action_type(ap: Dict[str, Any]) -> str:
+        stats = ap["worst_stats"] or {}
+        if not ap["bands"]:
+            return "Collect RF telemetry"
+        if stats.get("non_wifi", 0.0) >= 25:
+            return "Investigate external RF noise"
+        if "WAY TOO CLOSE" in ap["bubble"] or "Too close" in ap["bubble"]:
+            return "Validate floor plan / tune 2.4 GHz"
+        if "Tight" in ap["bubble"]:
+            return "Monitor / tune if client impact exists"
+        if "Within range" in ap["bubble"]:
+            return "Normal roaming overlap"
+        return "No RF action"
+
+    def _action_matrix_rows(items: List[Dict[str, Any]]) -> str:
+        rows = []
+        for ap in items[:18]:
+            stats = ap["worst_stats"] or {}
+            severity = ap.get("severity") or _severity(stats)
+            confidence = (
+                "RF telemetry only; physical distance unconfirmed"
+                if ap["bands"] else
+                "No RF samples; collect telemetry before deciding"
+            )
+            rows.append(
+                "<tr>"
+                f"<td>{_he(ap['site'])}</td>"
+                f"<td>{_he(ap['name'])}<br><code>{_he(ap['serial'])}</code></td>"
+                f"<td>{_he(ap['model'] or 'Unknown')}</td>"
+                f"<td>{_he((ap['worst_band'] + ' GHz') if ap['worst_band'] else 'No data')}</td>"
+                f"<td><span class=\"{severity['class']}\">{_he(severity['label'])}</span><br>{_he(ap['bubble'])}</td>"
+                f"<td>{stats.get('wifi', 0.0):.1f}% Wi-Fi / {stats.get('total', 0.0):.1f}% total</td>"
+                f"<td>{_he(_candidate_summary(ap, limit=3))}</td>"
+                f"<td>{_he(_action_type(ap))}<br><span class=\"muted\">{_he(confidence)}</span></td>"
+                "</tr>"
+            )
+        if not rows:
+            return '<tr><td colspan="8" class="empty-state">No APs require action from this telemetry window.</td></tr>'
+        return "".join(rows)
+
     executive_points = []
     if severe_plus:
         executive_points.append(
@@ -1469,6 +1561,10 @@ def _build_ap_spectrum_report(
         executive_points.append(
             f"{len(inactive_no_telemetry)} dormant/offline AP(s) did not return RF samples. Treat them as inventory cleanup or reactivation candidates, not active RF design evidence."
         )
+    if len(with_telemetry) >= 20 and not severe_plus and (len(high_pressure) + len(tight_pressure)) <= max(1, int(len(with_telemetry) * 0.30)):
+        executive_points.append(
+            "Overdeployment check: current telemetry does not show widespread severe RF pressure. Use before/after RF-profile testing and client-density review before buying more APs or lowering power further."
+        )
 
     executive_summary_html = f"""
       <div class="summary-card">
@@ -1478,6 +1574,25 @@ def _build_ap_spectrum_report(
           <ul>
             {''.join(f'<li>{point}</li>' for point in executive_points)}
           </ul>
+        </div>
+      </div>
+    """
+
+    action_scope: List[Dict[str, Any]] = []
+    for bucket in (severe_plus, high_pressure, tight_pressure, online_no_telemetry[:8]):
+        for ap in bucket:
+            if ap not in action_scope:
+                action_scope.append(ap)
+    action_matrix_html = f"""
+      <h3>AP Action Matrix</h3>
+      <table class="data dense">
+        <thead><tr><th>Site</th><th>AP</th><th>Model</th><th>Band</th><th>Severity / Symptom</th><th>RF Pressure</th><th>Same-Band RF-Domain Candidates</th><th>Recommended Action</th></tr></thead>
+        <tbody>{_action_matrix_rows(action_scope)}</tbody>
+      </table>
+      <div class="summary-card">
+        <div class="summary-title">Same-Band / Overdeployment Test Note</div>
+        <div class="summary-body">
+          Same-band means another AP in the same Meraki network returned telemetry on the same RF band, such as 2.4 GHz. It does <strong>not</strong> mean the APs are physically adjacent, and it does <strong>not</strong> mean all APs should be forced onto one manual channel. To test overdeployment without building plans, change one RF profile at a time, rerun the report after the change, and compare client load, 2.4 GHz Wi-Fi airtime, channel-utilization trend, and wireless event counts. If higher power increases overlap without improving client distribution or coverage, that is stronger evidence that the area may be overbuilt.
         </div>
       </div>
     """
@@ -1516,26 +1631,19 @@ def _build_ap_spectrum_report(
                 "run Dashboard RF Spectrum or a site survey, and avoid removing APs solely from this signal."
                 "</td></tr>"
             )
-        candidates = []
-        for other in ap_records:
-            if other["serial"] == ap["serial"] or other["network_id"] != ap["network_id"] or not band:
-                continue
-            stats = other["bands"].get(band)
-            if not stats:
-                continue
-            bubble, cls = _bubble(stats)
-            candidates.append((stats.get("wifi", 0.0), stats.get("total", 0.0), other, stats, bubble, cls))
-        candidates.sort(key=lambda item: (-item[0], -item[1], item[2]["name"]))
+        candidates = _same_band_candidates(ap, limit=6)
         if not candidates:
             return '<tr><td colspan="6" class="empty-state">No same-site AP telemetry candidates were available for this affected band.</td></tr>'
         rows = []
-        for _, __, other, stats, bubble, cls in candidates[:6]:
+        for other, stats, bubble, cls in candidates:
             if "External RF" in bubble or "non-Wi-Fi" in bubble:
-                context = "Same-band noise observation; not AP overlap"
+                context = "Same-band noise observation; not AP overlap or distance proof"
             elif "Too close" in bubble or "WAY TOO CLOSE" in bubble:
-                context = "Likely overlap candidate"
+                context = "High same-band RF pressure; validate on floor plan/site walk"
+            elif "Within range" in bubble:
+                context = "Normal roaming overlap unless floor plan or events say otherwise"
             else:
-                context = "Within same RF domain; verify on floor plan"
+                context = "Same RF domain; physical distance unconfirmed"
             rows.append(
                 "<tr>"
                 f"<td>{_he(other['name'])}<br><code>{_he(other['serial'])}</code></td>"
@@ -1736,9 +1844,9 @@ def _build_ap_spectrum_report(
         <thead><tr><th>Band</th><th>Wi-Fi</th><th>Non-Wi-Fi</th><th>Total</th><th>Bubble</th><th>Transmit Power Context</th></tr></thead>
         <tbody>{_band_rows(ap)}</tbody>
       </table>
-      <h3>Same-Band Context / Overlap Candidates</h3>
+      <h3>Same-Band RF-Domain Candidates (Distance Unconfirmed)</h3>
       <table class="data dense">
-        <thead><tr><th>Nearby AP Candidate</th><th>Model</th><th>Band</th><th>Candidate Airtime</th><th>Bubble</th><th>Context</th></tr></thead>
+        <thead><tr><th>RF-Domain Candidate</th><th>Model</th><th>Band</th><th>Candidate Airtime</th><th>Bubble</th><th>Context</th></tr></thead>
         <tbody>{_candidate_rows(ap)}</tbody>
       </table>
       <div class="summary-card">
@@ -1756,17 +1864,18 @@ def _build_ap_spectrum_report(
     return f"""
     <section id="ap-spectrum" class="report-section">
       <h2>AP Spectrum Availability &amp; Interference Report</h2>
-      <p>This dedicated RF report is designed for wireless refresh planning. It identifies APs whose spectrum is clean, APs that are merely within useful range of other radios, APs whose Wi-Fi airtime suggests tight or excessive overlap, and APs whose non-Wi-Fi utilization points to external RF noise. Excessive overlap or unresolved noise can reduce throughput, increase retries, slow roaming, and make a Wi-Fi 6/7 replacement look worse than it should if density, power, and noise sources are not corrected first.</p>
+      <p>This dedicated RF report is designed for wireless refresh planning. It identifies APs whose spectrum is clean, APs that are merely within useful range of other radios, APs whose Wi-Fi airtime suggests tight or excessive overlap, and APs whose non-Wi-Fi utilization points to external RF noise. It infers RF pressure from Meraki channel-utilization telemetry; it does not prove physical AP-to-AP distance unless floor-plan placement data is supplied. Excessive overlap or unresolved noise can reduce throughput, increase retries, slow roaming, and make a Wi-Fi 6/7 replacement look worse than it should if density, power, and noise sources are not corrected first.</p>
       <div class="kpi-row">
         <div class="kpi"><div class="kpi-label">AP Pages</div><div class="kpi-value">{len(ap_records)}</div><div class="kpi-note">One page per AP unit</div></div>
         <div class="kpi"><div class="kpi-label">RF Telemetry</div><div class="kpi-value">{len(with_telemetry)}</div><div class="kpi-note">APs with channel utilization</div></div>
-        <div class="kpi"><div class="kpi-label">Too Close</div><div class="kpi-value">{len(high_pressure)}</div><div class="kpi-note">High co-channel pressure</div></div>
+        <div class="kpi"><div class="kpi-label">Too Close</div><div class="kpi-value">{len(high_pressure)}</div><div class="kpi-note">High same-band RF pressure</div></div>
         <div class="kpi"><div class="kpi-label">RF Noise</div><div class="kpi-value">{len(noise_pressure)}</div><div class="kpi-note">Non-Wi-Fi interference</div></div>
         <div class="kpi"><div class="kpi-label">Severe+</div><div class="kpi-value">{len(severe_plus)}</div><div class="kpi-note">Fix before refresh decisions</div></div>
         <div class="kpi"><div class="kpi-label">Online Missing RF</div><div class="kpi-value">{len(online_no_telemetry)}</div><div class="kpi-note">Needs collection/AP health review</div></div>
         <div class="kpi"><div class="kpi-label">Dormant/Offline</div><div class="kpi-value">{len(inactive_no_telemetry)}</div><div class="kpi-note">Inventory cleanup / inactive APs</div></div>
       </div>
       {executive_summary_html}
+      {action_matrix_html}
       {telemetry_warning_html}
       <table class="data">
         <thead><tr><th>Site</th><th>APs</th><th>Too Close</th><th>Tight Bubble</th><th>Online Missing RF</th><th>Dormant/Offline Missing</th></tr></thead>
@@ -1780,7 +1889,7 @@ def _build_ap_spectrum_report(
       <div class="summary-card">
         <div class="summary-title">How To Read The Bubble Scale</div>
         <div class="summary-body">
-          Clean bubble means no current overlap symptom. Within range means normal overlap for roaming. Tight bubble means tune channel/power/placement. Too close and WAY TOO CLOSE mean AP-to-AP overlap should be reviewed before adding or replacing APs. RF Noise means non-Wi-Fi energy is saturating the band; find the external source before removing APs.
+          Clean bubble means no current overlap symptom. Within range means normal overlap for roaming and should not be treated as a problem by itself. Tight bubble means tune channel/profile/placement only if client impact exists. Too close and WAY TOO CLOSE mean same-band RF pressure should be reviewed before adding or replacing APs. RF Noise means non-Wi-Fi energy is saturating the band; find the external source before removing APs.
         </div>
       </div>
       <h3>Meraki Standards Basis</h3>
