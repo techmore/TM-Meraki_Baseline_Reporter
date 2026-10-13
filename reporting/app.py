@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from .common import (
     BACKUPS_DIR,
@@ -4435,13 +4435,15 @@ def build_org_report(
             _priced_rows += 1
         if _is_eol:
             _eol_models_mapped.append(_model_text)
+        # Built outside the f-string below: backslashes inside f-string expressions need Python 3.12+.
+        _rationale_html = f'<br><span class="muted">{_he(_rationale)}</span>' if _rationale else ""
         _unifi_rows += (
             f"<tr>"
             f"<td>{_he(_model)}</td>"
             f"<td>{_inventory_count}</td>"
             f"<td>{_count}</td>"
             f"<td>{_excluded_count}<br><span class=\"muted\">{_excluded_status_text(_row)}</span></td>"
-            f"<td>{_he(_unifi_name)}{f'<br><span class=\"muted\">{_he(_rationale)}</span>' if _rationale else ''}</td>"
+            f"<td>{_he(_unifi_name)}{_rationale_html}</td>"
             f"<td>{_money(_meraki_price)}</td>"
             f"<td><span class=\"muted\">{_he(_meraki_source)}</span><br>{_price_confidence_badge(_meraki_confidence)}</td>"
             f"<td>{_money(_unifi_price)}<br>{_price_confidence_badge(_unifi_confidence)}</td>"
