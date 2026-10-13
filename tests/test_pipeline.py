@@ -226,13 +226,24 @@ class TestRunShSmoke:
         assert (demo_output / "Fixture_Demo_Org_Complete_Report_2026-05-02.html").exists()
 
     def test_health_check_flag_exits_zero_for_report_only(self):
-        result = subprocess.run(
-            ["bash", str(PROJECT_ROOT / "run.sh"), "--report-only", "--health-check"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        # Report-only mode requires at least one org backup; backups/ is git-ignored, so a clean checkout (CI)
+        # has none. Provide a temporary one and remove only what this test created.
+        backups = PROJECT_ROOT / "backups"
+        placeholder = backups / "Org_HealthCheckTest"
+        created_root = not backups.exists()
+        placeholder.mkdir(parents=True, exist_ok=True)
+        try:
+            result = subprocess.run(
+                ["bash", str(PROJECT_ROOT / "run.sh"), "--report-only", "--health-check"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        finally:
+            placeholder.rmdir()
+            if created_root:
+                backups.rmdir()
         assert result.returncode == 0
         assert "Python runtime" in result.stdout
         assert "MERAKI_API_KEY" in result.stdout

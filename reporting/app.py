@@ -2282,6 +2282,12 @@ def build_org_report(
             f"</tr>"
         )
 
+    # Built outside the f-string below: a backslash inside an f-string expression needs Python 3.12+.
+    network_overview_body = "".join(network_overview_rows) if network_overview_rows else (
+        '<tr><td colspan="6" class="empty-state">No devices found in this organization\'s backup. '
+        'Run a full backup to populate this section.</td></tr>'
+    )
+
     network_overview_html = f"""
     <section id="network-overview" class="report-section">
       <h2>2. Network Overview</h2>
@@ -2300,7 +2306,7 @@ def build_org_report(
           </tr>
         </thead>
         <tbody>
-          {"".join(network_overview_rows) if network_overview_rows else '<tr><td colspan="6" class="empty-state">No devices found in this organization\'s backup. Run a full backup to populate this section.</td></tr>'}
+          {network_overview_body}
         </tbody>
       </table>
       <h3>Hardware Inventory by Site</h3>
