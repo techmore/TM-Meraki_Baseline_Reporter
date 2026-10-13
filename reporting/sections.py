@@ -91,12 +91,14 @@ def _render_switch_port_grid(
         group_kind = "SFP / Module" if label != "Front Panel" else "Front Panel"
         row_one = "".join(cells[:midpoint])
         row_two = "".join(cells[midpoint:])
+        # Built outside the f-string below: backslashes inside f-string expressions need Python 3.12+.
+        row_two_html = f'<div class="switch-port-row">{row_two}</div>' if row_two else ""
         groups_html.append(
             f'<div class="switch-port-group">'
             f'<div class="switch-port-group-title">{_he(label)} <span class="switch-port-group-kind">{_he(group_kind)}</span></div>'
             f'<div class="switch-port-face">'
             f'<div class="switch-port-row">{row_one}</div>'
-            f'{f"<div class=\"switch-port-row\">{row_two}</div>" if row_two else ""}'
+            f'{row_two_html}'
             f"</div></div>"
         )
     return summary + "".join(groups_html)
@@ -259,6 +261,11 @@ def _build_switch_detail_section(
                 "</tr>"
             )
 
+        # Built outside the f-string below: backslashes inside f-string expressions need Python 3.12+.
+        port_table_body = "".join(table_rows) if table_rows else (
+            '<tr><td colspan="13">No switch port status data available.</td></tr>'
+        )
+
         section_parts.append(
             f"""
     <section id="{_switch_anchor(serial, switch_name)}" class="report-section switch-detail-page">
@@ -297,7 +304,7 @@ def _build_switch_detail_section(
             <th>Total Data</th><th>Current Throughput</th><th>Power</th><th>Indicators</th><th>Connected Device</th>
           </tr>
         </thead>
-        <tbody>{''.join(table_rows) if table_rows else '<tr><td colspan=\"13\">No switch port status data available.</td></tr>'}</tbody>
+        <tbody>{port_table_body}</tbody>
       </table>
     </section>
     """

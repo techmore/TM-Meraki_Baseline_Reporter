@@ -47,7 +47,9 @@ def has_meraki_api_key() -> bool:
     return value not in PLACEHOLDER_KEYS
 
 
-def org_backup_dirs(backups_dir: Path = BACKUPS_DIR) -> list[Path]:
+def org_backup_dirs(backups_dir: Path | None = None) -> list[Path]:
+    # Resolve at call time: a default of BACKUPS_DIR would be frozen at import and ignore later overrides.
+    backups_dir = BACKUPS_DIR if backups_dir is None else backups_dir
     if not backups_dir.exists():
         return []
     return sorted(path for path in backups_dir.iterdir() if path.is_dir() and not path.name.startswith("."))
