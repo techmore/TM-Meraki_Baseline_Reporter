@@ -1,6 +1,6 @@
 import re
 from collections import deque
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # ── Network topology SVG ─────────────────────────────────────────────────────
 _TOPO_NW        = 132    # node width px
