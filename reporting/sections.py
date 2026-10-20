@@ -1,17 +1,15 @@
 import math
 import os
-
 from typing import Any, Dict, List, Optional, Tuple
 
 from .common import (
+    _build_switch_link_narrative,
     _describe_port_neighbor,
     _describe_vlan_mode,
     _format_usage_kb,
     _he,
     _inline_md,
     _is_sfp_like_port,
-    _model_capability_summary,
-    _hardware_consistency_note,
     _port_group_label,
     _port_heat_label,
     _port_heat_score,
@@ -20,10 +18,10 @@ from .common import (
     _port_sort_key,
     _speed_label,
     _switch_anchor,
-    _build_switch_link_narrative,
     render_section,
 )
 from .topology import _build_topology_facts
+
 
 def _render_switch_port_grid(
     ports: List[Dict[str, Any]],
@@ -159,7 +157,6 @@ def _build_switch_detail_section(
     ]
 
     for site_name, serial, switch_name, model in switch_entries:
-        switch = serial_to_dev.get(serial, {})
         ports = sorted(
             status_by_switch.get(serial, {}).values(),
             key=lambda item: (
@@ -364,7 +361,6 @@ def _build_ap_interference_section(
         worst = max(stats, key=lambda item: (item["non_wifi"], item["total"], item["wifi"]))
         avg_total = sum(item["total"] for item in stats) / len(stats)
         avg_non_wifi = sum(item["non_wifi"] for item in stats) / len(stats)
-        avg_wifi = sum(item["wifi"] for item in stats) / len(stats)
         conn = None
         for item in wireless_stats.get(net_id, []) if isinstance(wireless_stats, dict) else []:
             if isinstance(item, dict) and item.get("serial") == serial:

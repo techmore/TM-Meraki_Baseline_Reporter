@@ -3,8 +3,6 @@ import os
 import shutil
 import subprocess
 
-from .common import REPORT_VERSION
-
 log = logging.getLogger(__name__)
 
 def build_html(doc_title: str, body: str) -> str:

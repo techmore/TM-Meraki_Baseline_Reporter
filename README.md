@@ -33,12 +33,29 @@ has diverged substantially and should not merge that branch wholesale.
 ./install.sh
 ```
 
-2. Set `MERAKI_API_KEY` in `.env`.
+2. Provide your Meraki Dashboard API key (see [Credentials](#credentials)) — the
+   simplest option is `MERAKI_API_KEY=...` in `.env`.
 3. Run the full pipeline:
 
 ```bash
 ./run.sh
 ```
+
+### Credentials
+
+The API key is looked up in this order; the first real value wins:
+
+| Source | How |
+|--------|-----|
+| Environment | `export MERAKI_API_KEY=...` |
+| `.env` file | `MERAKI_API_KEY=...` in `.env` (git-ignored; `install.sh` creates it from `.env.example`) |
+| Key file | `MERAKI_API_KEY_FILE=/run/secrets/meraki_api_key` — a file whose only content is the key (Docker/Kubernetes secrets) |
+| OS keyring | `pip install keyring && python meraki_env.py store` (hidden prompt; stored under service `meraki-baseline-reporter`) |
+
+The key is never accepted as a command-line argument, so it stays out of shell
+history and `ps` output, and it is redacted from `backups/backup.log` and all
+log messages. `python meraki_env.py status` shows which source is active and a
+masked hint (`****c3f9`); `python meraki_query.py --check` verifies the key works.
 
 Check the local environment without running the pipeline:
 
@@ -122,11 +139,21 @@ python3 -m reporting --source-dir tests/fixtures --org-name "Fixture Demo Org" -
 ./run.sh --report-only --no-ai-review --no-open
 ```
 
-Run tests:
+Every stage has a detailed `--help` (`python -m reporting --help`,
+`python meraki_backup.py --help`, `python meraki_query.py --help`,
+`python -m reporting.health --help`, `python meraki_env.py --help`).
+
+Run tests and lint (the test suite mocks the Meraki API; no credentials needed):
 
 ```bash
-pytest -q
+pip install -r requirements-dev.txt
+pytest
+ruff check .
 ```
+
+Tool configuration (ruff, pytest, package metadata) lives in `pyproject.toml`.
+CI runs lint and the test matrix (Python 3.10–3.13) on every push and pull
+request, plus an advisory `pip-audit`.
 
 ## Project Shape
 

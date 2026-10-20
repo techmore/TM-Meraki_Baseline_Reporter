@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
+import logging
 import os
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from meraki_env import load_env
-
+from meraki_env import PLACEHOLDER_KEYS, load_env, resolve_api_key
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BACKUPS_DIR = PROJECT_ROOT / "backups"
-PLACEHOLDER_KEYS = {"", "your_key_here", "REPLACEME"}
 
 
 @dataclass(frozen=True)
@@ -41,10 +41,18 @@ def _env_value_from_file(path: Path, key_name: str) -> str:
     return ""
 
 
-def has_meraki_api_key() -> bool:
+def api_key_source() -> str:
+    """Return where the API key comes from (env, .env, file, keyring) or "missing"."""
     load_env(str(PROJECT_ROOT / ".env"))
     value = os.environ.get("MERAKI_API_KEY") or _env_value_from_file(PROJECT_ROOT / ".env", "MERAKI_API_KEY")
-    return value not in PLACEHOLDER_KEYS
+    if value not in PLACEHOLDER_KEYS:
+        return "env"
+    _key, source = resolve_api_key(str(PROJECT_ROOT / ".env"))
+    return source
+
+
+def has_meraki_api_key() -> bool:
+    return api_key_source() != "missing"
 
 
 def org_backup_dirs(backups_dir: Path | None = None) -> list[Path]:
@@ -56,6 +64,8 @@ def org_backup_dirs(backups_dir: Path | None = None) -> list[Path]:
 
 
 def module_available(name: str) -> bool:
+    # Importing weasyprint installs a progress logger that would otherwise clutter the check output.
+    logging.getLogger("weasyprint.progress").setLevel(logging.WARNING)
     try:
         importlib.import_module(name)
     except Exception:
@@ -64,6 +74,8 @@ def module_available(name: str) -> bool:
 
 
 def run_checks(require_api_key: bool = True, require_backups: bool = False, require_ollama: bool = False) -> list[CheckResult]:
+    key_source = api_key_source()
+    key_present = key_source != "missing"
     checks = [
         CheckResult("Python runtime", "ok", sys.version.split()[0]),
         CheckResult(
@@ -73,8 +85,10 @@ def run_checks(require_api_key: bool = True, require_backups: bool = False, requ
         ),
         CheckResult(
             "MERAKI_API_KEY",
-            "ok" if has_meraki_api_key() else ("fail" if require_api_key else "skip"),
-            "present" if has_meraki_api_key() else ("missing" if require_api_key else "not required for this mode"),
+            "ok" if key_present else ("fail" if require_api_key else "skip"),
+            f"present (source: {key_source})"
+            if key_present
+            else ("missing — see `python meraki_env.py --help`" if require_api_key else "not required for this mode"),
             required=require_api_key,
         ),
         CheckResult(
@@ -126,29 +140,32 @@ def print_checks(checks: list[CheckResult]) -> None:
         print(f"{check.status.upper():<4}  {check.name:<{width}}  {check.detail}")
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = list(argv or [])
-    mode = "full"
-    require_ollama = False
-    while argv:
-        arg = argv.pop(0)
-        if arg == "--report-only":
-            mode = "report-only"
-        elif arg == "--no-ai-review":
-            require_ollama = False
-        elif arg == "--require-ollama":
-            require_ollama = True
-        elif arg in {"--help", "-h"}:
-            print("Usage: python -m reporting.health [--report-only] [--require-ollama]")
-            return 0
-        else:
-            print(f"Unknown option: {arg}", file=sys.stderr)
-            return 2
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m reporting.health",
+        description="Read-only environment check: Python, imports, API key, backups, PDF renderer, Ollama.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "exit status: 0 when every required check passes, 1 otherwise.\n"
+            "\n"
+            "examples:\n"
+            "  python -m reporting.health                  # full pipeline prerequisites\n"
+            "  python -m reporting.health --report-only    # only what report generation needs\n"
+            "  python -m reporting.health --require-ollama # also fail when Ollama is missing"
+        ),
+    )
+    parser.add_argument("--report-only", action="store_true", help="Require org backups instead of an API key.")
+    parser.add_argument("--require-ollama", action="store_true", help="Treat a missing Ollama install as a failure.")
+    parser.add_argument("--no-ai-review", action="store_true", help=argparse.SUPPRESS)  # accepted for run.sh parity
+    return parser
 
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
     checks = run_checks(
-        require_api_key=(mode != "report-only"),
-        require_backups=(mode == "report-only"),
-        require_ollama=require_ollama,
+        require_api_key=not args.report_only,
+        require_backups=args.report_only,
+        require_ollama=args.require_ollama,
     )
     print_checks(checks)
     return 1 if any(check.status == "fail" and check.required for check in checks) else 0
