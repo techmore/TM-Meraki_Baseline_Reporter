@@ -5,16 +5,16 @@ import logging
 import os
 import pathlib
 import re
-import sys
 import time
 from datetime import datetime, timezone
-from typing import Callable, TextIO
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple
+
+from meraki_client import get_json as _client_get_json
+from meraki_client import get_one as _client_get_one
+from meraki_client import paged_get as _client_paged_get
+from meraki_env import install_redaction, mask_key, redacting_writer, require_api_key
 
 log = logging.getLogger(__name__)
-
-from meraki_env import load_env
-from meraki_client import MerakiRequestError, get_json as _client_get_json, get_one as _client_get_one, paged_get as _client_paged_get
 
 API_BASE          = os.getenv("MERAKI_API_BASE", "https://api.meraki.com/api/v1")
 BASE_DIR          = os.path.dirname(os.path.abspath(__file__))
@@ -411,7 +411,7 @@ def summarize_inventory(inventory: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def summarize_ap_clients(clients_by_network: Dict[str, Any]) -> Dict[str, Any]:
     counts: Dict[str, int] = {}
-    for net_id, data in clients_by_network.items():
+    for _net_id, data in clients_by_network.items():
         if not isinstance(data, list):
             continue
         for c in data:
@@ -919,9 +919,28 @@ def build_recommendations(
     return "\n".join(lines)
 
 
-def main() -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Meraki backup pipeline — fetches org data and writes JSON artifacts."
+        prog="meraki_backup.py",
+        description=(
+            "Collect Cisco Meraki organization data (inventory, device status, switch ports, "
+            "wireless, security baseline, licensing) into backups/<org>/ as JSON, and write "
+            "per-org recommendations.md. This is stage 1 of ./run.sh."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "credentials:\n"
+            "  The API key is read from MERAKI_API_KEY (environment or .env), MERAKI_API_KEY_FILE,\n"
+            "  or the OS keyring (python meraki_env.py store). It is never accepted as an argument\n"
+            "  and is redacted from backup.log. Run `python meraki_env.py status` to check.\n"
+            "\n"
+            "examples:\n"
+            "  python meraki_backup.py                    # reuse files newer than 12h\n"
+            "  python meraki_backup.py --force-refresh    # re-fetch everything\n"
+            "  python meraki_backup.py --cache-age 1      # treat files older than 1h as stale\n"
+            "\n"
+            "output: backups/<Org_Slug>/*.json, backups/<Org_Slug>/recommendations.md, backups/backup.log"
+        ),
     )
     parser.add_argument(
         "--force-refresh",
@@ -936,15 +955,18 @@ def main() -> int:
         metavar="HOURS",
         help="Max age in hours for a cached file to be considered fresh (default: 12).",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = build_arg_parser().parse_args(argv)
     force = args.force_refresh
     max_age_h = args.cache_age
 
-    load_env()
-    api_key = os.getenv("MERAKI_API_KEY")
+    api_key = require_api_key(os.path.join(BASE_DIR, ".env"))
     if not api_key:
-        print("Missing MERAKI_API_KEY env var.", file=sys.stderr)
         return 1
+    install_redaction(api_key)
 
     out_dir = BACKUPS_DIR
     os.makedirs(out_dir, exist_ok=True)
@@ -954,7 +976,10 @@ def main() -> int:
 
     log_path = os.path.join(out_dir, "backup.log")
     with open(log_path, "w", encoding="utf-8") as log_f:
+        # Belt and braces: even if an API error message ever carried the key, it cannot reach the log.
+        log_f.write = redacting_writer(api_key, log_f.write)  # type: ignore[method-assign]
         log_line(log_f, "INFO", f"Backup started. Output directory: {out_dir}")
+        log_line(log_f, "INFO", f"API key source: {mask_key(api_key)}")
         log_line(log_f, "INFO", f"force_refresh={force}  cache_age_h={max_age_h}")
 
         _orgs_path = os.path.join(out_dir, "organizations.json")
@@ -1056,7 +1081,7 @@ def main() -> int:
                 f"/organizations/{org_id}/uplinks/statuses",
                 "Uplink statuses",
             )
-            devices_statuses = _cached_safe_paged(
+            _cached_safe_paged(
                 "devices_statuses.json",
                 f"/organizations/{org_id}/devices/statuses",
                 "Device statuses",

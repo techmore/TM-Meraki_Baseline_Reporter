@@ -47,6 +47,13 @@ def request(method: str, url: str, api_key: str) -> urllib.request.Request:
     )
 
 
+def _sanitize(text: str, api_key: str) -> str:
+    """Make sure the API key can never leak through an error message or log line."""
+    if api_key and text:
+        return text.replace(api_key, "***REDACTED***")
+    return text
+
+
 def get_json(url: str, api_key: str, timeout: Optional[int] = None) -> Dict[str, Any]:
     req = request("GET", url, api_key)
     try:
@@ -58,15 +65,23 @@ def get_json(url: str, api_key: str, timeout: Optional[int] = None) -> Dict[str,
                 "status": resp.status,
             }
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8") if e.fp else ""
+        body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        body = _sanitize(body, api_key)
+        hint = ""
+        if e.code == 401:
+            hint = " (invalid or revoked API key)"
+        elif e.code == 403:
+            hint = " (key lacks access to this organization/network)"
+        elif e.code == 404:
+            hint = " (endpoint not available for this device/network type)"
         raise MerakiRequestError(
-            f"HTTP {e.code} for {url}: {body}",
+            f"HTTP {e.code}{hint} for {_sanitize(url, api_key)}: {body[:500]}",
             status=e.code,
             body=body,
             headers=dict(e.headers),
-        )
+        ) from None
     except urllib.error.URLError as e:
-        raise MerakiRequestError(f"Network error for {url}: {e}")
+        raise MerakiRequestError(f"Network error for {_sanitize(url, api_key)}: {_sanitize(str(e), api_key)}") from None
 
 
 def parse_link_header(link: Optional[str]) -> Dict[str, str]:

@@ -111,6 +111,11 @@ PY
 }
 
 has_meraki_api_key() {
+  # Prefer the Python resolver so .env, MERAKI_API_KEY_FILE and the OS keyring all count.
+  if [[ -n "${PYTHON_BIN:-}" && -x "$PYTHON_BIN" ]]; then
+    "$PYTHON_BIN" -c 'from meraki_env import get_api_key; raise SystemExit(0 if get_api_key() else 1)' 2>/dev/null
+    return $?
+  fi
   if [[ -n "${MERAKI_API_KEY:-}" && "${MERAKI_API_KEY}" != "your_key_here" ]]; then
     return 0
   fi

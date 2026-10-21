@@ -1,0 +1,43 @@
+[project]
+name = "tm-meraki-baseline-reporter"
+version = "1.2.0"
+description = "Collect Cisco Meraki organization data and render network health, security baseline and executive reports (HTML/PDF)."
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.10"
+dependencies = [
+    "meraki>=1.45.0",
+    "weasyprint>=60.0",
+    "prettytable>=3.9.0",
+]
+
+[project.optional-dependencies]
+keyring = ["keyring>=24"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "keyring>=24",
+]
+
+[project.urls]
+Homepage = "https://github.com/techmore/TM-Meraki_Baseline_Reporter"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = ["legacy", "backups", "meraki_backup_*", ".venv"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "W"]
+ignore = [
+    # Closures in meraki_backup.main() are invoked inside the same loop iteration.
+    "B023",
+    "E741",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["reporting", "meraki_env", "meraki_client", "meraki_backup", "merge_recommendations", "ollama_review"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --tb=short"

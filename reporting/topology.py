@@ -340,7 +340,6 @@ def _topo_svg(
 
     enr = enrichment or {}
     node_w = 196
-    node_h = 108        # internet / default card height
     layer_gap = 104
     col_gap = 20
     pad_x = 28

@@ -4,14 +4,15 @@ import logging
 import os
 import re
 import shutil
+import sys
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from .common import (
     BACKUPS_DIR,
     REPORT_VERSION,
-    _he,
     _hardware_consistency_note,
+    _he,
     _model_capability_summary,
     build_fallback_security_checks,
     check_backup_schema,
@@ -22,7 +23,7 @@ from .common import (
     render_section,
     render_security_baseline,
 )
-from .topology import _topo_pages, _topo_summary_rows, _topo_svg
+from .html_shell import build_html, write_pdf
 from .sections import (
     _build_ap_interference_section,
     _build_budget_forecast_section,
@@ -30,7 +31,7 @@ from .sections import (
     _build_switch_detail_section,
     _build_wan_capacity_section,
 )
-from .html_shell import build_html, write_pdf
+from .topology import _topo_pages, _topo_summary_rows
 
 log = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -391,7 +392,7 @@ def build_org_report(
     config_issues = []
     if isinstance(switch_port_configs, list):
         for port in switch_port_configs[:100]:
-            if port.get("enabled") == False and port.get("poeEnabled") == True:
+            if port.get("enabled") is False and port.get("poeEnabled") is True:
                 config_issues.append(
                     {
                         "switch": port.get("switchSerial", "Unknown"),
@@ -1069,7 +1070,7 @@ def build_org_report(
     # =========================================================
     network_overview_rows = []
     network_hardware_rows = []
-    for net_id, net_data in sorted(
+    for _net_id, net_data in sorted(
         devices_by_network.items(), key=lambda x: x[1]["name"]
     ):
         nd = net_data["devices"]
@@ -1250,7 +1251,7 @@ def build_org_report(
     }
 
     topo_site_parts: List[str] = []
-    for net_id, net_data in sorted(devices_by_network.items(), key=lambda x: x[1]["name"]):
+    for _net_id, net_data in sorted(devices_by_network.items(), key=lambda x: x[1]["name"]):
         site_devs = net_data["devices"]
         if not site_devs:
             continue
@@ -1376,7 +1377,7 @@ def build_org_report(
         switches   = [d for d in nd if d.get("productType") == "switch"]
         aps        = [d for d in nd if d.get("productType") == "wireless"]
 
-        sec = f'<div class="building-section">'
+        sec = '<div class="building-section">'
         sec += f"<h3>{net_name}</h3>"
 
         # ── Path summary bar ───────────────────────────────────────────────
@@ -2820,12 +2821,51 @@ def build_org_report(
         return backup_body
     return full_body
 
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m reporting",
+        description=(
+            "Render Meraki network reports (Complete, Executive Summary, Backup Settings) as HTML and PDF "
+            "from previously collected backup data. No Meraki API access is needed."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  python -m reporting\n"
+            "      Render every org found under backups/ (run meraki_backup.py first).\n"
+            "  python -m reporting --source-dir tests/fixtures --org-name 'Demo Org' --output-dir out/\n"
+            "      Render a demo report from the sanitized fixtures, no credentials required.\n"
+            "\n"
+            "output files (per org):\n"
+            "  <Org>_Complete_Report_<date>.html/.pdf, <Org>_Executive_Summary_Report_<date>.html/.pdf,\n"
+            "  <Org>_Backup_Settings_Report_<date>.html/.pdf, plus report.html/report.pdf aliases.\n"
+            "  PDFs need WeasyPrint or wkhtmltopdf; HTML is always written."
+        ),
+    )
+    parser.add_argument("--source-dir", metavar="DIR", help="Render a single backup or fixture directory instead of backups/.")
+    parser.add_argument("--org-name", metavar="NAME", help="Display name used in the report (default: read from the source directory).")
+    parser.add_argument("--output-dir", metavar="DIR", help="Where to write reports for --source-dir (default: the source directory).")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show debug-level log output.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Only show warnings and errors.")
+    return parser
+
+
+def _configure_logging(verbose: bool = False, quiet: bool = False) -> None:
+    level = logging.DEBUG if verbose else (logging.WARNING if quiet else logging.INFO)
+    root = logging.getLogger()
+    if not root.handlers:
+        logging.basicConfig(level=level, format="%(levelname)s %(message)s", stream=sys.stderr)
+    root.setLevel(level)
+    # WeasyPrint/fontTools are chatty (progress at INFO, unsupported-CSS notices at WARNING);
+    # keep them to real errors unless --verbose.
+    if not verbose:
+        for noisy in ("weasyprint", "weasyprint.progress", "fontTools"):
+            logging.getLogger(noisy).setLevel(logging.ERROR)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate Meraki HTML/PDF reports.")
-    parser.add_argument("--source-dir", help="Generate reports from a single backup/fixture directory.")
-    parser.add_argument("--org-name", help="Display name for --source-dir reports.")
-    parser.add_argument("--output-dir", help="Directory for generated reports when using --source-dir.")
-    args = parser.parse_args(argv)
+    args = build_arg_parser().parse_args(argv)
+    _configure_logging(verbose=args.verbose, quiet=args.quiet)
 
     if args.source_dir:
         source_dir = os.path.abspath(args.source_dir)
@@ -2841,7 +2881,7 @@ def main(argv: list[str] | None = None) -> int:
     org_dirs = find_org_dirs(BACKUPS_DIR)
     if not org_dirs:
         log.error("No org directories found in %s/", BACKUPS_DIR)
-        log.error("Run meraki_backup.py first.")
+        log.error("Run `python meraki_backup.py` first, or try `python -m reporting --source-dir tests/fixtures`.")
         return 1
 
     generated = 0

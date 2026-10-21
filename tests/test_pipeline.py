@@ -1,14 +1,9 @@
-import os
 import subprocess
-import sys
 from pathlib import Path
-
-import pytest
 
 import merge_recommendations as mr
 import ollama_review as orv
 from reporting import health
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 

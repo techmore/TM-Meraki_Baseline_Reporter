@@ -1,8 +1,6 @@
 """Tests for reporting/common.py — schema checks, data loading, HTML helpers."""
 import json
 import os
-import tempfile
-import pytest
 import sys
 
 # Ensure project root is on path
@@ -10,11 +8,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from reporting.common import (
     EXPECTED_BACKUP_SCHEMA_VERSION,
+    _he,
+    build_fallback_security_checks,
     check_backup_schema,
     read_backup_meta,
     render_security_baseline,
-    build_fallback_security_checks,
-    _he,
 )
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")

@@ -7,7 +7,7 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from reporting.__main__ import main
+from reporting.__main__ import main  # noqa: E402  (sys.path set up above)
 
 if __name__ == "__main__":
     raise SystemExit(main())

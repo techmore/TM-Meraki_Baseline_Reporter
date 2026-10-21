@@ -2,6 +2,7 @@
 import os
 import sys
 from datetime import datetime
+
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -9,13 +10,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 
 
+@pytest.fixture(scope="module")
+def report_html():
+    from reporting.app import build_org_report
+    return build_org_report(FIXTURES, "Test Org")
+
+
 class TestBuildOrgReport:
     """Smoke tests: build_org_report() on fixture data must produce valid HTML."""
-
-    @pytest.fixture(scope="class")
-    def report_html(self):
-        from reporting.app import build_org_report
-        return build_org_report(FIXTURES, "Test Org")
 
     def test_produces_string(self, report_html):
         assert isinstance(report_html, str)
@@ -125,7 +127,10 @@ class TestLicensingCounts:
     """Test that licensing expired/active counts use the bool expired field."""
 
     def test_expired_bool_counted(self):
-        import json, tempfile, os
+        import json
+        import os
+        import tempfile
+
         from reporting.app import build_org_report
         # Create a temp dir with just enough to not crash
         with tempfile.TemporaryDirectory() as tmp:
